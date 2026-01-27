@@ -6,12 +6,12 @@
 
 #include "autoconf.h" // CONFIG_SERIAL_BAUD
 #include "board/armcm_boot.h" // armcm_enable_irq
-#include "board/serial_bridge_irq.h" // serial_rx_byte
+#include "generic/serial_bridge_irq.h" // serial_rx_byte
 #include "command.h" // DECL_CONSTANT_STR
 #include "internal.h" // enable_pclock
 #include "sched.h" // DECL_INIT
 #include "board/gpio.h"
-#include "board/serial_bridge.h"
+#include "stm32/serial_bridge.h"
 
 #define CR1_FLAGS (USART_CR1_UE | USART_CR1_RE | USART_CR1_TE   \
                    | USART_CR1_RXNEIE)
