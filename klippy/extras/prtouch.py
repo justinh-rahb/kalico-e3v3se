@@ -8,6 +8,8 @@ import math
 import random
 import time
 
+from .. import mcu
+
 
 class PRTouchCFG:
     def __init__(self, config):
