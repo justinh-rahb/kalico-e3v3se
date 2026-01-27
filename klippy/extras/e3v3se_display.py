@@ -535,10 +535,10 @@ class E3v3seDisplay:
         self.config = config
         self.mutex = self.printer.get_reactor().mutex()
         self.name = config.get_name()
-        if self.name != 'e3v3se_display':
+        if self.name != "e3v3se_display":
             # This is a sub-section (like [e3v3se_display macro1])
             # Consume all options so Klipper doesn't complain about "unused options"
-            for opt in config.get_prefix_options(''):
+            for opt in config.get_prefix_options(""):
                 config.get(opt)
             return
         self.reactor = self.printer.get_reactor()
@@ -551,14 +551,14 @@ class E3v3seDisplay:
 
         # Collect custom buttons from sub-sections
         self.custom_buttons = []
-        for s in config.get_prefix_sections(self.name + ' '):
+        for s in config.get_prefix_sections(self.name + " "):
             btn = {
-                'name': s.get_name().split()[-1],
-                'label': s.get('label', s.get_name().split()[-1]),
-                'icon': s.get('icon', None),
-                'gcode': s.get('gcode', None)
+                "name": s.get_name().split()[-1],
+                "label": s.get("label", s.get_name().split()[-1]),
+                "icon": s.get("icon", None),
+                "gcode": s.get("gcode", None),
             }
-            if btn['gcode']:
+            if btn["gcode"]:
                 self.custom_buttons.append(btn)
         if self.custom_buttons:
             self.log("Loaded %d custom buttons" % len(self.custom_buttons))
@@ -4023,6 +4023,7 @@ class E3v3seDisplay:
 
 def load_config(config):
     return E3v3seDisplay(config)
+
 
 def load_config_prefix(config):
     return E3v3seDisplay(config)
