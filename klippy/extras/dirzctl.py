@@ -56,7 +56,7 @@ class DirZCtl:
         for stepper in self.toolhead.get_kinematics().get_steppers():
             if stepper.is_active_axis("z"):
                 self.steppers.append(stepper)
-        self.mcu_freq = self.mcu.get_constant_float("CLOCK_FREQ")   
+        self.mcu_freq = self.mcu.get_constant_float("CLOCK_FREQ")
 
         # self.send_heart_beat_cmd = self.mcu.lookup_query_command(
         # "heart_beat_dirzctl oid=%c",
