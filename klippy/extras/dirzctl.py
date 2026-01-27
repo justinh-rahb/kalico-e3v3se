@@ -89,7 +89,7 @@ class DirZCtl:
     def _handle_shutdown(self):
         self.is_shutdown = True
         pass
-    
+
     def _handle_disconnect(self):
         self.is_timeout = True
         pass
@@ -131,12 +131,13 @@ class DirZCtl:
         pass
 
     def send_heart_beat(self):
-        #if time.time() - self.last_send_heart > 0.1:
+        # if time.time() - self.last_send_heart > 0.1:
         #    self.send_heart_beat_cmd.send([self.oid])
         #    self.last_send_heart = time.time()
         pass
 
     cmd_DIRZCTL_help = "Test DIRZCTL."
+
     # DIRZCTL DIRECT=1 STEP_US=1500 STEP_CNT=100
     def cmd_DIRZCTL(self, gcmd):
         index = gcmd.get_int(

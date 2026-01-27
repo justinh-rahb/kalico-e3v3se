@@ -65,7 +65,7 @@ class TJC3224_LCD:
             serial : Serial object to send messages.
         """
         self.serial = serial
-    
+
     def init_display(self):
         print("Sending handshake... ")
         while not self.handshake():

@@ -51,16 +51,18 @@ class select_t:
             self.now += 1
         else:
             self.now = v - 1
-        return self.changed()  
+        return self.changed()
+
 
 class E3V3SEMenuKeys(MenuKeys):
     """
-    E3V3SEMenuKeys is a subclass of MenuKeys designed to 
+    E3V3SEMenuKeys is a subclass of MenuKeys designed to
     customize initialization without modifying the original MenuKeys class.
 
     This class defaults the pins for the menu keys to the corresponding
     pins of the ender 3 v3 se 3d printer.
     """
+
     def __init__(self, config, callback):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
@@ -123,12 +125,13 @@ class E3V3SEMenuKeys(MenuKeys):
 
 class E3V3SEPrinterSerialBridge(PrinterSerialBridge):
     """
-    E3V3SEPrinterSerialBridge is a subclass of PrinterSerialBridge designed to 
+    E3V3SEPrinterSerialBridge is a subclass of PrinterSerialBridge designed to
     customize initialization without modifying the original PrinterSerialBridge class.
 
     This class defaults the serial pins, baud, eol and serial bridge config to specific
     values used for the ender 3 v3 se 3d printer.
     """
+
     def __init__(self, config):
         self.callbacks = []
         self.printer = config.get_printer()
@@ -159,7 +162,6 @@ class E3V3SEPrinterSerialBridge(PrinterSerialBridge):
 
 
 class E3v3seDisplay:
-    
     ENCODER_DIFF_NO = 0  # no state
     ENCODER_DIFF_CW = 1  # clockwise rotation
     ENCODER_DIFF_CCW = 2  # counterclockwise rotation
@@ -541,13 +543,11 @@ class E3v3seDisplay:
         language = config.get("language", "english")
         self.selected_language = self.languages[language]
 
-
         # register for key events
         E3V3SEMenuKeys(config, self.key_event)
 
         self.serial_bridge = E3V3SEPrinterSerialBridge(self.config)
-   
-       
+
         # bridge = config.get('serial_bridge')
 
         # self.serial_bridge = self.printer.lookup_object(
@@ -562,8 +562,6 @@ class E3v3seDisplay:
 
         self._update_interval = 1
         self._update_timer = self.reactor.register_timer(self.EachMomentUpdate)
-
-
 
     def key_event(self, key, eventtime):
         if key == "click":
@@ -584,7 +582,7 @@ class E3v3seDisplay:
     def _handle_serial_bridge_response(self, data):
         byte_debug = " ".join(["0x{:02x}".format(byte) for byte in data])
         self.log("Received message: " + byte_debug)
-    
+
     def send_text(self, text):
         self.serial_bridge.send_text(text)
 
@@ -594,20 +592,22 @@ class E3v3seDisplay:
 
     def _screen_init(self, eventtime):
         self.reactor.update_timer(
-            self._update_timer, eventtime + self._update_interval)
+            self._update_timer, eventtime + self._update_interval
+        )
         return self.reactor.NEVER
 
     def handle_ready(self):
         self.reactor.register_timer(
-            self._reset_screen, self.reactor.monotonic())
-         
+            self._reset_screen, self.reactor.monotonic()
+        )
+
     def _reset_screen(self, eventtime):
         self.log("Reset")
         self.reactor.register_timer(
-            self._screen_init, self.reactor.monotonic() + 2.)
+            self._screen_init, self.reactor.monotonic() + 2.0
+        )
         return self.reactor.NEVER
 
-    
     def lcdExit(self):
         logging.info("Shutting down the LCD")
         self.lcd.set_backlight_brightness(0)
@@ -621,7 +621,12 @@ class E3v3seDisplay:
         if self.pd.status == "printing":
             self.Goto_PrintProcess()
             self.Draw_Status_Area(with_update)
-        elif self.pd.status in ["operational", "complete", "standby", "cancelled"]:
+        elif self.pd.status in [
+            "operational",
+            "complete",
+            "standby",
+            "cancelled",
+        ]:
             self.Goto_MainMenu()
         else:
             self.Goto_MainMenu()
@@ -832,8 +837,12 @@ class E3v3seDisplay:
                 self.select_axis.reset()
                 self.Draw_Move_Menu()
                 self.pd.sendGCode("G92 E0")
-                self.pd.current_position.e = self.pd.HMI_ValueStruct.Move_E_scale = 0
-            elif self.select_prepare.now == self.PREPARE_CASE_DISA:  # Disable steppers
+                self.pd.current_position.e = (
+                    self.pd.HMI_ValueStruct.Move_E_scale
+                ) = 0
+            elif (
+                self.select_prepare.now == self.PREPARE_CASE_DISA
+            ):  # Disable steppers
                 self.pd.sendGCode("M84")
             elif self.select_prepare.now == self.PREPARE_CASE_HOME:  # Homing
                 self.checkkey = self.Last_Prepare
@@ -866,10 +875,14 @@ class E3v3seDisplay:
 
                 self.EncoderRateLimit = False
 
-            elif self.select_prepare.now == self.PREPARE_CASE_PLA:  # PLA preheat
+            elif (
+                self.select_prepare.now == self.PREPARE_CASE_PLA
+            ):  # PLA preheat
                 self.pd.preheat("PLA")
 
-            elif self.select_prepare.now == self.PREPARE_CASE_TPU:  # TPU preheat
+            elif (
+                self.select_prepare.now == self.PREPARE_CASE_TPU
+            ):  # TPU preheat
                 self.pd.preheat("TPU")
 
             elif self.select_prepare.now == self.PREPARE_CASE_COOL:  # Cool
@@ -877,7 +890,9 @@ class E3v3seDisplay:
                     self.pd.zero_fan_speeds()
                 self.pd.disable_all_heaters()
 
-            elif self.select_prepare.now == self.PREPARE_CASE_LANG:  # Toggle Language
+            elif (
+                self.select_prepare.now == self.PREPARE_CASE_LANG
+            ):  # Toggle Language
                 self.HMI_ToggleLanguage()
                 self.Draw_Prepare_Menu()
 
@@ -1075,7 +1090,9 @@ class E3v3seDisplay:
                 self.Goto_PrintProcess()
             elif self.select_print.now == 2:  # stop window
                 if self.pd.HMI_flag.select_flag:
-                    self.dwin_abort_flag = True  # Reset feedrate, return to Home
+                    self.dwin_abort_flag = (
+                        True  # Reset feedrate, return to Home
+                    )
                     self.pd.cancel_job()
                     self.Goto_MainMenu()
                 else:
@@ -1115,7 +1132,9 @@ class E3v3seDisplay:
                 self.Goto_PrintProcess()
             elif self.select_tune.now == self.TUNE_CASE_SPEED:  # Print speed
                 self.checkkey = self.PrintSpeed
-                self.pd.HMI_ValueStruct.print_speed = self.pd.feedrate_percentage
+                self.pd.HMI_ValueStruct.print_speed = (
+                    self.pd.feedrate_percentage
+                )
                 self.lcd.draw_int_value(
                     True,
                     True,
@@ -1125,7 +1144,10 @@ class E3v3seDisplay:
                     self.color_background_black,
                     3,
                     200,
-                    self.MBASE(self.TUNE_CASE_SPEED + self.MROWS - self.index_tune) - 8,
+                    self.MBASE(
+                        self.TUNE_CASE_SPEED + self.MROWS - self.index_tune
+                    )
+                    - 8,
                     self.pd.feedrate_percentage,
                 )
                 self.EncoderRateLimit = False
@@ -1516,13 +1538,15 @@ class E3v3seDisplay:
             self.pd.EXTRUDE_MAXLENGTH
         ) * self.MINUNITMULT:
             self.pd.HMI_ValueStruct.Move_E_scale = (
-                self.pd.last_E_scale + (self.pd.EXTRUDE_MAXLENGTH) * self.MINUNITMULT
+                self.pd.last_E_scale
+                + (self.pd.EXTRUDE_MAXLENGTH) * self.MINUNITMULT
             )
         elif (self.pd.last_E_scale - self.pd.HMI_ValueStruct.Move_E_scale) > (
             self.pd.EXTRUDE_MAXLENGTH
         ) * self.MINUNITMULT:
             self.pd.HMI_ValueStruct.Move_E_scale = (
-                self.pd.last_E_scale - (self.pd.EXTRUDE_MAXLENGTH) * self.MINUNITMULT
+                self.pd.last_E_scale
+                - (self.pd.EXTRUDE_MAXLENGTH) * self.MINUNITMULT
             )
         self.pd.current_position.e = self.pd.HMI_ValueStruct.Move_E_scale / 10
         self.lcd.draw_signed_float(
@@ -1554,11 +1578,13 @@ class E3v3seDisplay:
                 self.select_control.set(1)
                 self.index_control = self.MROWS
                 self.Draw_Control_Menu()
-            elif self.select_temp.now == self.TEMP_CASE_TEMP:  # Nozzle temperature
+            elif (
+                self.select_temp.now == self.TEMP_CASE_TEMP
+            ):  # Nozzle temperature
                 self.checkkey = self.ETemp
-                self.pd.HMI_ValueStruct.E_Temp = self.pd.thermalManager["temp_hotend"][
-                    0
-                ]["target"]
+                self.pd.HMI_ValueStruct.E_Temp = self.pd.thermalManager[
+                    "temp_hotend"
+                ][0]["target"]
                 self.lcd.draw_int_value(
                     True,
                     True,
@@ -1574,9 +1600,9 @@ class E3v3seDisplay:
                 self.EncoderRateLimit = False
             elif self.select_temp.now == self.TEMP_CASE_BED:  # Bed temperature
                 self.checkkey = self.BedTemp
-                self.pd.HMI_ValueStruct.Bed_Temp = self.pd.thermalManager["temp_bed"][
-                    "target"
-                ]
+                self.pd.HMI_ValueStruct.Bed_Temp = self.pd.thermalManager[
+                    "temp_bed"
+                ]["target"]
                 self.lcd.draw_int_value(
                     True,
                     True,
@@ -1592,9 +1618,9 @@ class E3v3seDisplay:
                 self.EncoderRateLimit = False
             elif self.select_temp.now == self.TEMP_CASE_FAN:  # Fan speed
                 self.checkkey = self.FanSpeed
-                self.pd.HMI_ValueStruct.Fan_speed = self.pd.thermalManager["fan_speed"][
-                    0
-                ]
+                self.pd.HMI_ValueStruct.Fan_speed = self.pd.thermalManager[
+                    "fan_speed"
+                ][0]
                 self.lcd.draw_int_value(
                     True,
                     True,
@@ -1609,7 +1635,9 @@ class E3v3seDisplay:
                 )
                 self.EncoderRateLimit = False
 
-            elif self.select_temp.now == self.TEMP_CASE_PLA:  # PLA preheat setting
+            elif (
+                self.select_temp.now == self.TEMP_CASE_PLA
+            ):  # PLA preheat setting
                 self.checkkey = self.PLAPreheat
                 self.select_PLA.reset()
                 self.pd.HMI_ValueStruct.show_mode = -2
@@ -1626,7 +1654,9 @@ class E3v3seDisplay:
                 self.Draw_Back_First()
                 i = 1
                 self.Draw_Menu_Line_With_Only_Icons(
-                    i, self.icon_SetEndTemp, self.icon_TEXT_pla_nozzle_temperature
+                    i,
+                    self.icon_SetEndTemp,
+                    self.icon_TEXT_pla_nozzle_temperature,
                 )  # PLA nozzle temp
                 self.lcd.draw_int_value(
                     True,
