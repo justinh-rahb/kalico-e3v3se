@@ -67,40 +67,54 @@ class E3V3SEMenuKeys(MenuKeys):
         self.callback = callback
         buttons = self.printer.load_object(config, "buttons")
         # Register rotary encoder
-        encoder_pins = config.get('encoder_pins', '^PA12, ^PA11')
-        encoder_steps_per_detent = config.getchoice('encoder_steps_per_detent',
-                                                    {2: 2, 4: 4}, 4)
+        encoder_pins = config.get("encoder_pins", "^PA12, ^PA11")
+        encoder_steps_per_detent = config.getchoice(
+            "encoder_steps_per_detent", {2: 2, 4: 4}, 4
+        )
         if encoder_pins is not None:
             try:
-                pin1, pin2 = encoder_pins.split(',')
+                pin1, pin2 = encoder_pins.split(",")
             except:
                 raise config.error("Unable to parse encoder_pins")
-            buttons.register_rotary_encoder(pin1.strip(), pin2.strip(),
-                                            self.encoder_cw_callback,
-                                            self.encoder_ccw_callback,
-                                            encoder_steps_per_detent)
-        self.encoder_fast_rate = config.getfloat('encoder_fast_rate',
-                                                 .030, above=0.)
+            buttons.register_rotary_encoder(
+                pin1.strip(),
+                pin2.strip(),
+                self.encoder_cw_callback,
+                self.encoder_ccw_callback,
+                encoder_steps_per_detent,
+            )
+        self.encoder_fast_rate = config.getfloat(
+            "encoder_fast_rate", 0.030, above=0.0
+        )
         self.last_encoder_cw_eventtime = 0
         self.last_encoder_ccw_eventtime = 0
         # Register click button
         self.is_short_click = False
         self.click_timer = self.reactor.register_timer(self.long_click_event)
-        self.register_click_button(config, 'click_pin', self.click_callback, False,  '^!PB1')
+        self.register_click_button(
+            config, "click_pin", self.click_callback, False, "^!PB1"
+        )
 
-    def register_click_button(self, config, name, callback, push_only=True, default_value=None,):
+    def register_click_button(
+        self,
+        config,
+        name,
+        callback,
+        push_only=True,
+        default_value=None,
+    ):
         pin = config.get(name, default_value)
         if pin is None:
             return
         buttons = self.printer.lookup_object("buttons")
-        if config.get('analog_range_' + name, None) is None:
+        if config.get("analog_range_" + name, None) is None:
             if push_only:
                 buttons.register_button_push(pin, callback)
             else:
                 buttons.register_buttons([pin], callback)
             return
-        amin, amax = config.getfloatlist('analog_range_' + name, count=2)
-        pullup = config.getfloat('analog_pullup_resistor', 4700., above=0.)
+        amin, amax = config.getfloatlist("analog_range_" + name, count=2)
+        pullup = config.getfloat("analog_pullup_resistor", 4700.0, above=0.0)
         if push_only:
             buttons.register_adc_button_push(pin, amin, amax, pullup, callback)
         else:
@@ -119,7 +133,7 @@ class E3V3SEPrinterSerialBridge(PrinterSerialBridge):
         self.callbacks = []
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
-        self.eol = config.get('eol', default='')
+        self.eol = config.get("eol", default="")
         self._ready = False
         self.baud = config.getint("baud", 115200)
         self.serial_config = config.getint("config", 3)
@@ -127,13 +141,14 @@ class E3V3SEPrinterSerialBridge(PrinterSerialBridge):
 
         self.reactor = self.printer.get_reactor()
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
-        self.printer.register_event_handler("klippy:disconnect",
-            self.handle_disconnect)
+        self.printer.register_event_handler(
+            "klippy:disconnect", self.handle_disconnect
+        )
 
         ppins = self.printer.lookup_object("pins")
-        pin_params = ppins.lookup_pin(config.get("tx_pin", 'PA2'))
-        rx_pin_params = ppins.lookup_pin(config.get("rx_pin" , 'PA3'))
-        self.mcu = pin_params['chip']
+        pin_params = ppins.lookup_pin(config.get("tx_pin", "PA2"))
+        rx_pin_params = ppins.lookup_pin(config.get("rx_pin", "PA3"))
+        self.mcu = pin_params["chip"]
         self.oid = self.mcu.create_oid()
         self.mcu.register_config_callback(self.build_config)
 
@@ -242,18 +257,18 @@ class E3v3seDisplay:
     ICON = 0
     GIF_ICON = 27
     languages = {
-            "chinese": 2,
-            "english": 4,
-            "german": 6,
-            "russian": 9,
-            "french": 12,
-            "turkish": 15, 
-            "spanish": 17,
-            "italian": 19,
-            "portuguese": 21,
-            "japanese": 23, 
-            "korean": 25
-        }
+        "chinese": 2,
+        "english": 4,
+        "german": 6,
+        "russian": 9,
+        "french": 12,
+        "turkish": 15,
+        "spanish": 17,
+        "italian": 19,
+        "portuguese": 21,
+        "japanese": 23,
+        "korean": 25,
+    }
 
     # ICON ID
     icon_logo = 0
@@ -533,13 +548,14 @@ class E3v3seDisplay:
         self.serial_bridge = E3V3SEPrinterSerialBridge(self.config)
    
        
-        #bridge = config.get('serial_bridge')
+        # bridge = config.get('serial_bridge')
 
-        #self.serial_bridge = self.printer.lookup_object(
+        # self.serial_bridge = self.printer.lookup_object(
         #    'serial_bridge %s' %(bridge))
         self.serial_bridge.register_callback(
-            self._handle_serial_bridge_response)
-        
+            self._handle_serial_bridge_response
+        )
+
         self.lcd = TJC3224_LCD(self.serial_bridge)
         self.checkkey = self.MainMenu
         self.pd = PrinterData(config)
@@ -550,23 +566,23 @@ class E3v3seDisplay:
 
 
     def key_event(self, key, eventtime):
-        if key == 'click':
+        if key == "click":
             self.encoder_state = self.ENCODER_DIFF_ENTER
-        elif key == 'long_click':
+        elif key == "long_click":
             self.encoder_state = self.ENCODER_DIFF_ENTER
-        elif key == 'up':
+        elif key == "up":
             self.encoder_state = self.ENCODER_DIFF_CCW
-        elif key == 'down':
+        elif key == "down":
             self.encoder_state = self.ENCODER_DIFF_CW
         self.encoder_has_data()
 
     def get_encoder_state(self):
         last_state = self.encoder_state
         self.encoder_state = self.ENCODER_DIFF_NO
-        return  last_state
-    
+        return last_state
+
     def _handle_serial_bridge_response(self, data):
-        byte_debug = ' '.join(['0x{:02x}'.format(byte) for byte in data])
+        byte_debug = " ".join(["0x{:02x}".format(byte) for byte in data])
         self.log("Received message: " + byte_debug)
     
     def send_text(self, text):
@@ -754,7 +770,8 @@ class E3v3seDisplay:
                     # Scroll up and draw a blank bottom line
                     self.Scroll_Menu(self.scroll_up)
                     self.Draw_Menu_Icon(
-                        self.MROWS, self.icon_axis + self.select_prepare.now - 1
+                        self.MROWS,
+                        self.icon_axis + self.select_prepare.now - 1,
                     )
 
                     # Draw "More" icon for sub-menus
@@ -769,7 +786,10 @@ class E3v3seDisplay:
                             self.Item_Prepare_Cool(self.MROWS)
                 else:
                     self.Move_Highlight(
-                        1, self.select_prepare.now + self.MROWS - self.index_prepare
+                        1,
+                        self.select_prepare.now
+                        + self.MROWS
+                        - self.index_prepare,
                     )
 
         elif encoder_state == self.ENCODER_DIFF_CCW:
@@ -796,7 +816,10 @@ class E3v3seDisplay:
                         self.Item_Prepare_Home(0)
                 else:
                     self.Move_Highlight(
-                        -1, self.select_prepare.now + self.MROWS - self.index_prepare
+                        -1,
+                        self.select_prepare.now
+                        + self.MROWS
+                        - self.index_prepare,
                     )
 
         elif encoder_state == self.ENCODER_DIFF_ENTER:
@@ -834,7 +857,9 @@ class E3v3seDisplay:
                     2,
                     3,
                     175,
-                    self.MBASE(self.PREPARE_CASE_ZOFF + self.MROWS - self.index_prepare)
+                    self.MBASE(
+                        self.PREPARE_CASE_ZOFF + self.MROWS - self.index_prepare
+                    )
                     - 10,
                     self.pd.HMI_ValueStruct.offset_value,
                 )
@@ -870,7 +895,8 @@ class E3v3seDisplay:
                     self.index_control = self.select_control.now
                     self.Scroll_Menu(self.scroll_up)
                     self.Draw_Menu_Icon(
-                        self.MROWS, self.icon_temperature + self.index_control - 1
+                        self.MROWS,
+                        self.icon_temperature + self.index_control - 1,
                     )
                     self.Draw_More_Icon(
                         self.CONTROL_CASE_TEMP + self.MROWS - self.index_control
@@ -880,7 +906,9 @@ class E3v3seDisplay:
                     )  # Motion >
                     if self.index_control > self.MROWS:
                         self.Draw_More_Icon(
-                            self.CONTROL_CASE_INFO + self.MROWS - self.index_control
+                            self.CONTROL_CASE_INFO
+                            + self.MROWS
+                            - self.index_control
                         )  # Info >
                         self.lcd.move_screen_area(
                             1,
@@ -893,7 +921,10 @@ class E3v3seDisplay:
                         )
                 else:
                     self.Move_Highlight(
-                        1, self.select_control.now + self.MROWS - self.index_control
+                        1,
+                        self.select_control.now
+                        + self.MROWS
+                        - self.index_control,
                     )
         elif encoder_state == self.ENCODER_DIFF_CCW:
             if self.select_control.dec():
