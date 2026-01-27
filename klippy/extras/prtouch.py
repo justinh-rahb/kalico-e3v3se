@@ -8,6 +8,7 @@ import math
 import random
 import time
 
+
 class PRTouchCFG:
     def __init__(self, config):
         self.base_count = config.getint('base_count', default=40, minval=10, maxval=100)

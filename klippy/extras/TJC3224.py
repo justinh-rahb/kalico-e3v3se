@@ -1,6 +1,7 @@
 import math
 import time
 
+
 class TJC3224_LCD:
     """
     Class representing the control interface for a TJC3224 LCD display.
