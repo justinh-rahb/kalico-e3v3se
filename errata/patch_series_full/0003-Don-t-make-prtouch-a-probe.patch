@@ -1,0 +1,24 @@
+From e582d12e75fc1a598296d1e570ed13bdb19a7be9 Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Sat, 11 Nov 2023 06:50:09 +0000
+Subject: [PATCH 03/43] Don't make prtouch a probe
+
+---
+ klippy/extras/prtouch.py | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
+index 1410a7a70..5823a0ce5 100644
+--- a/klippy/extras/prtouch.py
++++ b/klippy/extras/prtouch.py
+@@ -804,7 +804,6 @@ class PRTouchEndstopWrapper:
+ 
+ def load_config(config):
+     prt = PRTouchEndstopWrapper(config)
+-    config.get_printer().add_object('probe', probe.PrinterProbe(config, prt))
+     return prt
+ 
+ # G28
+-- 
+2.39.5 (Apple Git-154)
+

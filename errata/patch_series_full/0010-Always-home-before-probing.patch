@@ -1,0 +1,25 @@
+From af97bc7750524632b232d1c26dc4e7c49705b53a Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Mon, 13 Nov 2023 18:22:11 +0000
+Subject: [PATCH 10/43] Always home before probing
+
+---
+ klippy/extras/prtouch.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
+index a64f24a8c..a016e1183 100644
+--- a/klippy/extras/prtouch.py
++++ b/klippy/extras/prtouch.py
+@@ -798,7 +798,7 @@ class PRTouchEndstopWrapper:
+ 
+     cmd_PRTOUCH_PROBE_ZOFFSET_help = "Probe the z-offset"
+     def cmd_PRTOUCH_PROBE_ZOFFSET(self, gcmd):
+-        self._ck_g28ed()
++        self.obj.gcode.run_script_from_command('G28')
+         if self.cfg.clear_nozzle:
+             self.clear_nozzle(self.cfg.hot_min_temp, self.cfg.hot_max_temp, self.cfg.bed_max_temp,
+                             self.cfg.min_hold, self.cfg.max_hold)
+-- 
+2.39.5 (Apple Git-154)
+

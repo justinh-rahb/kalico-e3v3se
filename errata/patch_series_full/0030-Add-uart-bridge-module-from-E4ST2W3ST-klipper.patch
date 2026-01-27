@@ -1,0 +1,803 @@
+From cd1e82a798d7748d18202e1f7aac0997684742b8 Mon Sep 17 00:00:00 2001
+From: Joao Curti <jpcurti@users.noreply.github.com>
+Date: Thu, 18 Jan 2024 19:38:23 +0100
+Subject: [PATCH 30/43] Add uart bridge module from @E4ST2W3ST /klipper
+
+---
+ docs/G-Codes.md                 |  19 +++
+ klippy/extras/serial_bridge.py  | 186 +++++++++++++++++++++++++
+ src/Makefile                    |   1 +
+ src/generic/serial_bridge_irq.c | 119 ++++++++++++++++
+ src/generic/serial_bridge_irq.h |  24 ++++
+ src/serial_bridge.c             |  86 ++++++++++++
+ src/stm32/Kconfig               |  14 ++
+ src/stm32/Makefile              |   3 +
+ src/stm32/serial_bridge.c       | 238 ++++++++++++++++++++++++++++++++
+ src/stm32/serial_bridge.h       |   6 +
+ 10 files changed, 696 insertions(+)
+
+diff --git a/docs/G-Codes.md b/docs/G-Codes.md
+index e55fba35d..a5e8ae665 100644
+--- a/docs/G-Codes.md
++++ b/docs/G-Codes.md
+@@ -1142,6 +1142,25 @@ loaded into the `printer.save_variables.variables` dict at startup and
+ can be used in gcode macros. The provided VALUE is parsed as a Python
+ literal.
+ 
++### [serial_bridge]
++The following command is enabled if a
++[serial_bridge config section](Config_Reference.md#serial_bridge)
++has been enabled.
++
++#### SERIAL_BRIDGE_SEND
++`SERIAL_BRIDGE_SEND [TEXT=<value>] [BRIDGE=<value>]`: This command will
++send a serial message (TEXT) to the bridge specificed (BRIDGE).
++
++#### SERIAL_BRIDGE_LIST_CONFIGS
++`SERIAL_BRIDGE_LIST_CONFIGS`: This command will list the available
++configurations reported by the MCU for use. This config should be used
++when setting up a new [serial_bridge](Config_Reference.md#serial_bridge).
++
++#### SERIAL_BRIDGE_LIST_BRIDGES
++`SERIAL_BRIDGE_LIST_BRIDGES`: This command will list the available
++bridges ready for use from the printer configuration
++[serial_bridge](Config_Reference.md#serial_bridge).
++
+ ### [screws_tilt_adjust]
+ 
+ The following commands are available when the
+diff --git a/klippy/extras/serial_bridge.py b/klippy/extras/serial_bridge.py
+new file mode 100644
+index 000000000..512495de1
+--- /dev/null
++++ b/klippy/extras/serial_bridge.py
+@@ -0,0 +1,186 @@
++# Support for "serial bridge"
++#
++# Copyright (C) 2019-2020  Kevin O'Connor <kevin@koconnor.net>
++#
++# This file may be distributed under the terms of the GNU GPLv3 license.
++import logging, re
++
++QUERY_TIME = 0.2
++
++class SerialBridge:
++    def __init__(self, config):
++        self.mcus = {}
++        self.configs = []
++        self.printer = config.get_printer()
++        self.gcode = self.printer.lookup_object("gcode")
++        self.gcode.register_command("SERIAL_BRIDGE_SEND",
++            self.cmd_SERIAL_BRIDGE_SEND,
++            desc="Send a message to a uart bridge")
++        self.gcode.register_command("SERIAL_BRIDGE_LIST_CONFIGS",
++            self.cmd_SERIAL_BRIDGE_LIST_CONFIGS,
++            desc="List Available serial configs")
++        self.gcode.register_command("SERIAL_BRIDGE_LIST_BRIDGES",
++            self.cmd_SERIAL_BRIDGE_LIST_BRIDGES,
++            desc="List current bridges")
++        self.printer.register_event_handler("klippy:ready", self.handle_ready)
++        self.printer.register_event_handler("klippy:disconnect",
++            self.handle_disconnect)
++        self.bridges = {}
++
++    def handle_ready(self):
++        self._ready = True
++
++        self.mcus = self.printer.lookup_objects('mcu')
++
++        self.configs = []
++        for n, mcu in self.mcus:
++            constants = mcu.get_constants()
++            configs= (
++                ["%s=%s" % (k, v) for k,v in constants.items() \
++                    if k.startswith("SERIAL_BRIDGE_CONFIG")])
++
++            self.configs.extend(configs)
++            logging.info("Serial bridge: available configs for %s: " % (n)
++                 + ", ".join(configs))
++
++    def handle_disconnect(self):
++        pass
++
++    def setup_bridge(self, bridge):
++        self.bridges[bridge.name.split()[-1]] = bridge
++
++    def cmd_SERIAL_BRIDGE_LIST_CONFIGS(self, gcmd):
++        gcmd.respond_info((", ".join(self.configs)))
++
++    def cmd_SERIAL_BRIDGE_LIST_BRIDGES(self, gcmd):
++        gcmd.respond_info((", ".join(self.bridges.keys())))
++
++    def cmd_SERIAL_BRIDGE_SEND(self, gcmd):
++        text = gcmd.get("TEXT")
++        bridge = gcmd.get("BRIDGE")
++
++        if not bridge:
++            gcmd.respond_info("BRIDGE is required")
++            return
++
++        if bridge not in self.bridges:
++            gcmd.respond_info("BRIDGE not found")
++            return
++
++        self.bridges[bridge].send_serial(
++            self.perform_replacement(gcmd.get("TEXT")))
++
++    def get_configs(self):
++        return self.configs
++
++    def perform_replacement(self, input_string):
++        # Find all occurrences of "\x" followed by two hexadecimal digits
++        hex_matches = re.finditer(r'\\x([0-9a-fA-F]{2})', input_string)
++
++        # Replace each matched hex sequence with its corresponding bytes
++        replaced_bytes = bytearray()
++        last_index = 0
++
++        for match in hex_matches:
++            hex_value = match.group(1)
++            byte_value = bytearray.fromhex(hex_value)
++            replaced_bytes.extend(byte_value)
++            last_index = match.end()
++
++        replaced_bytes.extend(input_string[last_index:].encode('utf-8'))
++
++        return replaced_bytes
++
++class PrinterSerialBridge:
++    def __init__(self, config):
++        self.callbacks = []
++        self.printer = config.get_printer()
++        self.name = config.get_name().split()[-1]
++        self.eol = config.get('eol', default='\n')
++        self._ready = False
++        self.baud = config.getint("baud", 115200)
++        self.serial_config = config.getint("config", 4)
++        self._logging = config.getboolean("logging", False)
++
++        self.reactor = self.printer.get_reactor()
++        self.printer.register_event_handler("klippy:ready", self.handle_ready)
++        self.printer.register_event_handler("klippy:disconnect",
++            self.handle_disconnect)
++
++        ppins = self.printer.lookup_object("pins")
++        pin_params = ppins.lookup_pin(config.get("tx_pin"))
++        rx_pin_params = ppins.lookup_pin(config.get("rx_pin"))
++        self.mcu = pin_params['chip']
++        self.oid = self.mcu.create_oid()
++        self.mcu.register_config_callback(self.build_config)
++
++        self.input_buffer = ""
++
++        self.serial_bridge = self.printer.load_object(config, "serial_bridge")
++        self.serial_bridge.setup_bridge(self)
++
++    def register_callback(self, callback):
++        self.callbacks.append(callback)
++
++    def chunkstring(self, msg, length):
++        return (msg[0+i:length+i] for i in range(0, len(msg), length))
++
++    def send_text(self, msg):
++        self.send_serial(msg.encode('utf-8'))
++
++    def send_serial(self, msg):
++        if not self._ready:
++            self.warn("Can't send message in a disconnected state")
++            return
++
++        chunks = self.chunkstring(
++            msg + self.serial_bridge.perform_replacement(self.eol), 40)
++        for chunk in chunks:
++            byte_debug = ' '.join(['0x{:02x}'.format(byte) for byte in chunk])
++            self.log("Sending message: " + byte_debug)
++            self.serial_bridge_send_cmd.send([self.oid, chunk, 4])
++
++    def build_config(self):
++        rest_ticks = self.mcu.seconds_to_clock(QUERY_TIME)
++        clock = self.mcu.get_query_slot(self.oid)
++        self.mcu.add_config_cmd(
++            "command_config_serial_bridge oid=%d clock=%d rest_ticks=%d "\
++                "config=%d baud=%d" % (
++                    self.oid, clock, rest_ticks, self.serial_config, self.baud
++                ))
++
++        cmd_queue = self.mcu.alloc_command_queue()
++
++        self.mcu.register_response(self._handle_serial_bridge_response,
++            "serial_bridge_response", self.oid)
++        self.serial_bridge_send_cmd = self.mcu.lookup_command(
++            "serial_bridge_send oid=%c text=%*s",
++            cq=cmd_queue)
++
++    def _handle_serial_bridge_response(self, params):
++        data = params["text"]
++
++        data = bytearray(data)
++
++        for callback in self.callbacks:
++            callback(data)
++
++    def handle_ready(self):
++        self.log("Ready")
++        self._ready = True
++
++    def handle_disconnect(self):
++        self._ready = False
++
++    def log(self, msg, *args, **kwargs):
++        if self._logging:
++            logging.info("SERIAL BRIDGE %s: " % (self.name) + str(msg) )
++
++    def warn(self, msg, *args, **kwargs):
++        logging.warning("SERIAL BRIDGE %s: " % (self.name) + str(msg))
++
++def load_config(config):
++    return SerialBridge(config)
++
++def load_config_prefix(config):
++    return PrinterSerialBridge(config)
+\ No newline at end of file
+diff --git a/src/Makefile b/src/Makefile
+index 7c33e44f6..6b70e7b78 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -1,6 +1,7 @@
+ # Main code build rules
+ 
+ src-y += sched.c command.c basecmd.c debugcmds.c
++src-$(CONFIG_SERIAL_BRIDGE) += serial_bridge.c
+ src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \
+     trsync.c dirzctl.c hx711s.c
+ src-$(CONFIG_HAVE_GPIO_ADC) += adccmds.c
+diff --git a/src/generic/serial_bridge_irq.c b/src/generic/serial_bridge_irq.c
+new file mode 100644
+index 000000000..3e9d7029f
+--- /dev/null
++++ b/src/generic/serial_bridge_irq.c
+@@ -0,0 +1,119 @@
++// Generic interrupt based serial uart helper code
++//
++// Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
++//
++// This file may be distributed under the terms of the GNU GPLv3 license.
++
++#include <string.h> // memmove
++#include "autoconf.h" // CONFIG_SERIAL_BAUD
++#include "board/io.h" // readb
++#include "board/irq.h" // irq_save
++#include "board/misc.h" // console_sendf
++#include "board/pgm.h" // READP
++#include "command.h" // DECL_CONSTANT
++#include "sched.h" // sched_wake_tasks
++#include "serial_bridge_irq.h" // serial_enable_tx_irq
++#include "board/serial_bridge.h" //SERIAL_BRIDGE_CNT
++
++static uint8_t receive_bridge_buf
++        [SERIAL_BRIDGE_CNT][SERIAL_BRIDGE_RX_BUFF_SIZE],
++        receive_bridge_pos[SERIAL_BRIDGE_CNT];
++static uint8_t transmit_bridge_buf
++        [SERIAL_BRIDGE_CNT][SERIAL_BRIDGE_RX_BUFF_SIZE],
++transmit_bridge_pos[SERIAL_BRIDGE_CNT], transmit_bridge_max[SERIAL_BRIDGE_CNT];
++
++void serial_bridge_rx_byte(uint_fast8_t data, uint8_t usart_index) {
++    if (receive_bridge_pos[usart_index] >= SERIAL_BRIDGE_RX_BUFF_SIZE)
++        // Serial overflow - ignore
++        return;
++    sched_wake_tasks();
++    receive_bridge_buf[usart_index][receive_bridge_pos[usart_index]++] = data;
++}
++
++int serial_bridge_get_tx_byte(uint8_t *pdata, uint8_t usart_index) {
++    if (transmit_bridge_pos[usart_index] >= transmit_bridge_max[usart_index])
++        return -1;
++    *pdata =
++        transmit_bridge_buf[usart_index][transmit_bridge_pos[usart_index]++];
++    return 0;
++}
++
++void
++serial_bridge_send(uint8_t* data, uint_fast8_t size, uint8_t config)
++{
++    uint8_t* usart_index_ptr
++        = serial_bridge_get_uart_index_from_config(config);
++
++    if(usart_index_ptr == NULL){
++        return;
++    }
++
++    uint8_t usart_index = *usart_index_ptr;
++
++    // Verify space for message
++    uint_fast8_t tpos =
++        readb(&transmit_bridge_pos[usart_index]),
++        tmax = readb(&transmit_bridge_max[usart_index]);
++
++    if (tpos >= tmax) {
++        tpos = tmax = 0;
++        writeb(&transmit_bridge_max[usart_index], 0);
++        writeb(&transmit_bridge_pos[usart_index], 0);
++    }
++
++    if (tmax + size > sizeof(transmit_bridge_buf[usart_index])) {
++        if (tmax + size - tpos > sizeof(transmit_bridge_buf[usart_index]))
++            // Not enough space for message
++            return;
++        // Disable TX irq and move usart_index
++        writeb(&transmit_bridge_max[usart_index], 0);
++        tpos = readb(&transmit_bridge_pos[usart_index]);
++        tmax -= tpos;
++        memmove(&transmit_bridge_buf[usart_index][0],
++            &transmit_bridge_buf[usart_index][tpos], tmax);
++        writeb(&transmit_bridge_pos[usart_index], 0);
++        writeb(&transmit_bridge_max[usart_index], tmax);
++        serial_bridge_enable_tx_irq(usart_index);
++    }
++
++    // Generate message
++    uint8_t *buf = &transmit_bridge_buf[usart_index][tmax];
++    memcpy(buf, data, size);
++
++    // Start message transmit
++    writeb(&transmit_bridge_max[usart_index], tmax + size);
++    serial_bridge_enable_tx_irq(usart_index);
++}
++
++// Remove from the receive buffer the given number of bytes
++uint8_t
++serial_bridge_get_data(uint8_t* data, uint8_t config)
++{
++    uint8_t* usart_index_ptr
++        = serial_bridge_get_uart_index_from_config(config);
++
++    if(usart_index_ptr == NULL){
++        return 0;
++    }
++
++    uint8_t usart_index = *usart_index_ptr;
++
++    for (;;) {
++        uint_fast8_t rpos = readb(&receive_bridge_pos[usart_index]);
++        if (!rpos)
++            return 0;
++
++        uint8_t *buf = receive_bridge_buf[usart_index];
++        memcpy(data, buf, rpos);
++        irqstatus_t flag = irq_save();
++        if (rpos != readb(&receive_bridge_pos[usart_index])) {
++            // Raced with irq handler - retry
++            irq_restore(flag);
++            continue;
++        }
++        receive_bridge_pos[usart_index] = 0;
++        irq_restore(flag);
++
++        return rpos;
++    }
++}
+\ No newline at end of file
+diff --git a/src/generic/serial_bridge_irq.h b/src/generic/serial_bridge_irq.h
+new file mode 100644
+index 000000000..9283cc839
+--- /dev/null
++++ b/src/generic/serial_bridge_irq.h
+@@ -0,0 +1,24 @@
++#ifndef __GENERIC_SERIAL_BRIDGE_IRQ_H
++#define __GENERIC_SERIAL_BRIDGE_IRQ_H
++
++#include <stdint.h> // uint32_t
++
++#define SERIAL_BRIDGE_RX_BUFF_SIZE 192
++#define SERIAL_BRIDGE_NUMBER_OF_CONFIGS = 5
++
++// callback provided by board specific code
++void serial_bridge_enable_tx_irq(int8_t usart_index);
++
++// serial_brodge_irq.c
++void serial_bridge_rx_byte(uint_fast8_t data, uint8_t usart_index);
++int serial_bridge_get_tx_byte(uint8_t *pdata, uint8_t usart_index);
++
++// serial_bridge.c
++void serial_bridge_send(uint8_t* data, uint_fast8_t size, uint8_t config);
++
++// serial_bridge.c
++uint8_t serial_bridge_get_data(uint8_t* data, uint8_t config);
++
++int8_t serial_bridge_configure(uint8_t* usart_index, uint32_t* baud);
++
++#endif // serial_bridge_irq.h
+\ No newline at end of file
+diff --git a/src/serial_bridge.c b/src/serial_bridge.c
+new file mode 100644
+index 000000000..9754a58ec
+--- /dev/null
++++ b/src/serial_bridge.c
+@@ -0,0 +1,86 @@
++// Support for serial port bridging
++//
++// Copyright (C) 2019  Kevin O'Connor <kevin@koconnor.net>
++//
++// This file may be distributed under the terms of the GNU GPLv3 license.
++
++#include <string.h> // memcpy
++#include "autoconf.h" // CONFIG_MACH_AVR
++#include "board/gpio.h" // gpio_out_write
++#include "board/irq.h" // irq_poll
++#include "board/misc.h" // timer_read_time
++#include "board/io.h" // readb
++#include "generic/serial_bridge_irq.h" // console2_sendf
++#include "basecmd.h" // oid_alloc
++#include "command.h" // DECL_COMMAND
++#include "sched.h" // sched_shutdown
++
++struct serial_bridge {
++    struct timer timer;
++    uint8_t config;
++    uint32_t baud;
++    uint32_t rest_time;
++};
++
++static struct task_wake serial_bridge_wake;
++
++static uint_fast8_t serial_bridge_event(struct timer *timer) {
++    struct serial_bridge *bridge = container_of(
++            timer, struct serial_bridge, timer);
++
++    sched_wake_task(&serial_bridge_wake);
++
++    bridge->timer.waketime += bridge->rest_time;
++
++    return SF_RESCHEDULE;
++}
++
++void
++command_config_serial_bridge(uint32_t *args)
++{
++    struct serial_bridge *bridge = oid_alloc(
++        args[0], command_config_serial_bridge, sizeof(*bridge));
++    bridge->timer.func = serial_bridge_event;
++    bridge->timer.waketime = args[1];
++    bridge->rest_time = args[2];
++    bridge->config = args[3];
++    bridge->baud = args[4];
++
++    serial_bridge_configure(&bridge->config, &bridge->baud);
++    sched_add_timer(&bridge->timer);
++}
++DECL_COMMAND(command_config_serial_bridge,
++            "command_config_serial_bridge oid=%c clock=%u"
++                " rest_ticks=%u config=%c baud=%u");
++
++void
++command_serial_bridge_send(uint32_t *args)
++{
++    struct serial_bridge *sb = oid_lookup(args[0],
++        command_config_serial_bridge);
++    uint8_t data_len = args[1];
++    uint8_t *data = command_decode_ptr(args[2]);
++
++    serial_bridge_send(data, data_len, sb->config);
++}
++DECL_COMMAND(command_serial_bridge_send, "serial_bridge_send oid=%c text=%*s");
++
++void
++serial_bridge_task(void)
++{
++    if (!sched_check_wake(&serial_bridge_wake))
++        return;
++
++    static uint8_t buf[SERIAL_BRIDGE_RX_BUFF_SIZE];
++
++    uint8_t oid;
++    struct serial_bridge *sb;
++    foreach_oid(oid, sb, command_config_serial_bridge) {
++        uint32_t data_len = serial_bridge_get_data(buf, sb->config);
++        if (data_len) {
++            sendf("serial_bridge_response oid=%c text=%*s",
++                oid, (uint8_t)data_len, buf);
++        }
++    }
++}
++DECL_TASK(serial_bridge_task);
+\ No newline at end of file
+diff --git a/src/stm32/Kconfig b/src/stm32/Kconfig
+index dbd6ff959..2a3ca90ec 100644
+--- a/src/stm32/Kconfig
++++ b/src/stm32/Kconfig
+@@ -501,6 +501,20 @@ choice
+         depends on HAVE_STM32_FDCANBUS
+ endchoice
+ 
++config SERIAL_BRIDGE
++    bool "Enable serial bridge" if LOW_LEVEL_OPTIONS
++    depends on MACH_STM32
++    default n
++
++config ENABLE_SERIAL_BRIDGE_USART1
++    bool "USART1" if SERIAL_BRIDGE && !(STM32_SERIAL_USART1 || STM32_SERIAL_USART1_ALT_PB7_PB6)
++    depends on SERIAL_BRIDGE
++config ENABLE_SERIAL_BRIDGE_USART2
++    bool "USART2" if SERIAL_BRIDGE && !(STM32_SERIAL_USART2 || STM32_SERIAL_USART2_ALT_PA15_PA14 || STM32_SERIAL_USART2_ALT_PB4_PB3 || STM32_SERIAL_USART2_ALT_PD6_PD5)
++    depends on SERIAL_BRIDGE
++config ENABLE_SERIAL_BRIDGE_USART6
++    bool "USART6" if SERIAL_BRIDGE
++    depends on SERIAL_BRIDGE
+ 
+ config STM32_CANBUS_PB8_PB9
+     bool
+diff --git a/src/stm32/Makefile b/src/stm32/Makefile
+index 18af2e9d7..97a1b7808 100644
+--- a/src/stm32/Makefile
++++ b/src/stm32/Makefile
+@@ -94,6 +94,9 @@ src-$(CONFIG_USBCANBUS) += $(usb-src-y) $(canbus-src-y)
+ src-$(CONFIG_USBCANBUS) += stm32/chipid.c generic/usb_canbus.c
+ src-$(CONFIG_HAVE_GPIO_HARD_PWM) += stm32/hard_pwm.c
+ 
++src-$(CONFIG_SERIAL_BRIDGE) += stm32/serial_bridge.c generic/serial_bridge_irq.c
++
++
+ # Binary output file rules
+ target-y += $(OUT)klipper.bin
+ 
+diff --git a/src/stm32/serial_bridge.c b/src/stm32/serial_bridge.c
+new file mode 100644
+index 000000000..4a5bbb8b7
+--- /dev/null
++++ b/src/stm32/serial_bridge.c
+@@ -0,0 +1,238 @@
++// STM32 serial
++//
++// Copyright (C) 2019  Kevin O'Connor <kevin@koconnor.net>
++//
++// This file may be distributed under the terms of the GNU GPLv3 license.
++
++#include "autoconf.h" // CONFIG_SERIAL_BAUD
++#include "board/armcm_boot.h" // armcm_enable_irq
++#include "board/serial_bridge_irq.h" // serial_rx_byte
++#include "command.h" // DECL_CONSTANT_STR
++#include "internal.h" // enable_pclock
++#include "sched.h" // DECL_INIT
++#include "board/gpio.h"
++#include "board/serial_bridge.h"
++
++#define CR1_FLAGS (USART_CR1_UE | USART_CR1_RE | USART_CR1_TE   \
++                   | USART_CR1_RXNEIE)
++
++typedef struct serial_bridge_config {
++    uint8_t number;
++    USART_TypeDef* usart;
++    uint8_t rx_pin;
++    uint8_t tx_pin;
++    uint8_t rx_alt_function;
++    uint8_t tx_alt_function;
++    uint32_t baud;
++    uint8_t active;
++    uint8_t usart_index;
++} serial_bridge_config_t;
++
++
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART1_PA3,PA2", 0);
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART1_PB7,PB6", 1);
++#endif
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART2_PD6,PD5", 2);
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART2_PA3,PA2", 3);
++#endif
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART6_PA12,PA11", 4);
++#endif
++
++USART_TypeDef* usarts[] = {
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++    USART1,
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++    USART2,
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++    USART6,
++    #endif
++};
++
++serial_bridge_config_t configs[] = {
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++    {
++        0,
++        USART1,
++        GPIO('A', 3),
++        GPIO('A', 2),
++        7,
++        7
++    },
++    {
++        1,
++        USART1,
++        GPIO('B', 7),
++        GPIO('B', 6),
++        7,
++        7
++    },
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++    {
++        2,
++        USART2,
++        GPIO('D', 6),
++        GPIO('D', 5),
++        7,
++        7
++    },
++    {
++        3,
++        USART2,
++        GPIO('A', 3),
++        GPIO('A', 2),
++        7,
++        7
++    },
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++    {
++        4,
++        USART6,
++        GPIO('A', 12),
++        GPIO('A', 11),
++        8,
++        8
++    },
++    #endif
++};
++
++uint8_t* serial_bridge_get_uart_index_from_config(uint8_t config){
++    for(int8_t i = 0; i <  (sizeof(configs) / sizeof(configs[0])); i++){
++        if(configs[i].number == config){
++            return &(configs[i].usart_index);
++        }
++    }
++    return NULL;
++}
++
++serial_bridge_config_t* serial_bridge_get_config_by_number(uint8_t number){
++    for(int8_t i = 0; i <  (sizeof(configs) / sizeof(configs[0])); i++){
++        if(configs[i].number == number){
++            return &configs[i];
++        }
++    }
++    return NULL;
++}
++
++serial_bridge_config_t*
++serial_bridge_get_active_config_for_usart(USART_TypeDef* usart){
++    for(int8_t i = 0; i <  (sizeof(configs) / sizeof(configs[0])); i++){
++        if(configs[i].usart == usart && configs[i].active){
++            return &configs[i];
++        }
++    }
++    return NULL;
++}
++
++void serial_bridge_handle_uart_irq(serial_bridge_config_t* config){
++    uint32_t sr = config->usart->SR;
++    if (sr & (USART_SR_RXNE | USART_SR_ORE)) {
++        // The ORE flag is automatically cleared by reading SR, followed
++        // by reading DR.
++        serial_bridge_rx_byte(config->usart->DR, config->usart_index);
++    }
++    if (sr & USART_SR_TXE && config->usart->CR1 & USART_CR1_TXEIE) {
++        uint8_t data;
++        int ret = serial_bridge_get_tx_byte(&data, config->usart_index);
++        if (ret)
++            config->usart->CR1 = CR1_FLAGS;
++        else
++            config->usart->DR = data;
++    }
++}
++
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++void
++USART1_serial_bridge_IRQHandler(void)
++{
++   serial_bridge_handle_uart_irq(
++        serial_bridge_get_active_config_for_usart(USART1));
++}
++#endif
++
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++void
++USART2_serial_bridge_IRQHandler(void)
++{
++    serial_bridge_handle_uart_irq(
++        serial_bridge_get_active_config_for_usart(USART2));
++}
++#endif
++
++
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++void
++USART6_serial_bridge_IRQHandler(void)
++{
++    serial_bridge_handle_uart_irq(
++        serial_bridge_get_active_config_for_usart(USART6));
++}
++#endif
++
++void
++serial_bridge_enable_tx_irq(int8_t usart_index)
++{
++    for(int8_t i = 0; i < (sizeof(configs) / sizeof(configs[0])); i++){
++        if(configs[i].usart_index == usart_index && configs[i].active){
++            configs[i].usart->CR1 = CR1_FLAGS | USART_CR1_TXEIE;
++        }
++    }
++}
++
++int8_t
++serial_bridge_configure(uint8_t* config, uint32_t* baud)
++{
++    serial_bridge_config_t* s_config =
++        serial_bridge_get_config_by_number(*config);
++    if (config == NULL) {
++        return -1;
++    }
++    s_config->baud = *baud;
++    s_config->active = 1;
++
++    enable_pclock((uint32_t)s_config->usart);
++
++    uint32_t pclk = get_pclock_frequency((uint32_t)s_config->usart);
++    uint32_t div = DIV_ROUND_CLOSEST(pclk, *baud);
++    s_config->usart->BRR = (((div / 16) << USART_BRR_DIV_Mantissa_Pos)
++                   | ((div % 16) << USART_BRR_DIV_Fraction_Pos));
++    s_config->usart->CR1 = CR1_FLAGS;
++
++    gpio_peripheral(s_config->rx_pin,
++        GPIO_FUNCTION(s_config->rx_alt_function), 1);
++    gpio_peripheral(s_config->tx_pin,
++        GPIO_FUNCTION(s_config->tx_alt_function), 0);
++
++    return 0;
++}
++
++
++void
++serial_bridge_init(void)
++{
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++    armcm_enable_irq(USART1_serial_bridge_IRQHandler, USART1_IRQn, 0);
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++    armcm_enable_irq(USART2_serial_bridge_IRQHandler, USART2_IRQn, 0);
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++    armcm_enable_irq(USART6_serial_bridge_IRQHandler, USART6_IRQn, 0);
++    #endif
++
++    //assign indexes for the uart buffers that are in use
++    for(int8_t i = 0; i < sizeof(configs)/sizeof(configs[0]); i++){
++        for(int8_t j = 0; j < sizeof(usarts)/sizeof(usarts[0]); j++){
++            if(usarts[j] == configs[i].usart){
++                configs[i].usart_index = j;
++            }
++        }
++    }
++}
++DECL_INIT(serial_bridge_init);
+\ No newline at end of file
+diff --git a/src/stm32/serial_bridge.h b/src/stm32/serial_bridge.h
+new file mode 100644
+index 000000000..614eeabb2
+--- /dev/null
++++ b/src/stm32/serial_bridge.h
+@@ -0,0 +1,6 @@
++#include <stdint.h>
++
++#define SERIAL_BRIDGE_CNT CONFIG_ENABLE_SERIAL_BRIDGE_USART1 + \
++    CONFIG_ENABLE_SERIAL_BRIDGE_USART2 + CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++
++uint8_t* serial_bridge_get_uart_index_from_config(uint8_t config);
+\ No newline at end of file
+-- 
+2.39.5 (Apple Git-154)
+

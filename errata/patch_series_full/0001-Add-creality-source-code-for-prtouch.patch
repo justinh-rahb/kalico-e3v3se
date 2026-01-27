@@ -1,0 +1,1703 @@
+From 311db3db0579818346ac1cab8b5d85f04548589f Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Sat, 11 Nov 2023 06:24:30 +0000
+Subject: [PATCH 01/43] Add creality source code for prtouch
+
+---
+ klippy/extras/dirzctl.py | 111 ++++++
+ klippy/extras/filter.py  | 125 ++++++
+ klippy/extras/hx711s.py  | 207 ++++++++++
+ klippy/extras/prtouch.py | 819 +++++++++++++++++++++++++++++++++++++++
+ src/dirzctl.c            | 199 ++++++++++
+ src/hx711s.c             | 188 +++++++++
+ 6 files changed, 1649 insertions(+)
+
+diff --git a/klippy/extras/dirzctl.py b/klippy/extras/dirzctl.py
+new file mode 100644
+index 000000000..c17b43c19
+--- /dev/null
++++ b/klippy/extras/dirzctl.py
+@@ -0,0 +1,111 @@
++# Support for button detection and callbacks
++#
++# Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
++#
++# This file may be distributed under the terms of the GNU GPLv3 license.
++import mcu
++import time
++
++class DirZCtl:
++    def __init__(self, config):
++        self.printer = config.get_printer()
++        self.toolhead = None
++        self.mcu = mcu.get_printer_mcu(self.printer, config.get('use_mcu'))
++        self.oid = self.mcu.create_oid()
++        self.steppers = []
++        self.mcu.register_config_callback(self._build_config)
++        self.mcu.register_response(self._handle_debug_dirzctl, "debug_dirzctl", self.oid)
++        self.mcu.register_response(self._handle_result_dirzctl, "result_dirzctl", self.oid)
++        self.printer.register_event_handler('klippy:mcu_identify', self._handle_mcu_identify)
++        self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
++        self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
++        self.gcode = self.printer.lookup_object("gcode")
++        self.gcode.register_command('DIRZCTL', self.cmd_DIRZCTL, desc=self.cmd_DIRZCTL_help)
++        self.all_params = []
++        self.hx711s = None
++        self.mcu_freq = 72000000
++        self.step_base = config.getfloat('step_base', default=2, minval=1, maxval=6)
++        self.last_send_heart = 0.
++        self.is_shutdown = True
++        self.is_timeout = True
++        pass
++
++    def _handle_mcu_identify(self):
++        self.hx711s = self.printer.lookup_object('hx711s')
++        self.steppers = []
++        self.toolhead = self.printer.lookup_object('toolhead')
++        for stepper in self.toolhead.get_kinematics().get_steppers():
++            if stepper.is_active_axis('z'):
++                self.steppers.append(stepper)
++        self.mcu_freq = self.mcu.get_constant_float('CLOCK_FREQ')   
++
++        # self.send_heart_beat_cmd = self.mcu.lookup_query_command(
++        # "heart_beat_dirzctl oid=%c",
++        # "heart_beat_dirzctl_result oid=%c",
++        # oid=self.oid, cq=None)
++
++        self.is_shutdown = False
++        self.is_timeout = False
++        pass
++
++    def _build_config(self):
++        self.mcu.add_config_cmd("config_dirzctl oid=%d z_count=%d" % (self.oid, len(self.steppers)))
++        for i in range(len(self.steppers)):
++            dir_pin, step_pin, ivt_dir, ivt_step = self.steppers[i].get_pin_info()
++            self.mcu.add_config_cmd("add_dirzctl oid=%d index=%d dir_pin=%s step_pin=%s dir_invert=%d step_invert=%d" % (self.oid, i, dir_pin, step_pin, ivt_dir, ivt_step))
++
++        # self.run_cmd = self.mcu.lookup_command("run_dirzctl oid=%c direct=%c step_us=%u step_cnt=%u is_ck_con=%c", cq=None)
++        self.run_cmd = self.mcu.lookup_command("run_dirzctl oid=%c direct=%c step_us=%u step_cnt=%u", cq=None)
++        pass
++
++    def _handle_shutdown(self):
++        self.is_shutdown = True
++        pass
++    
++    def _handle_disconnect(self):
++        self.is_timeout = True
++        pass
++
++    def _handle_debug_dirzctl(self, params):
++        self.printer.lookup_object('prtouch').pnt_msg(str(params))
++        pass
++
++    def _handle_result_dirzctl(self, params):
++        self.all_params.append(params)
++        # self.printer.lookup_object('prtouch').pnt_msg(str(params))
++        pass
++
++    def get_params(self):
++        return self.all_params, (self.all_params[0]['tick'] if len(self.all_params) > 0 else 0)
++
++    def check_and_run(self, direct, step_us, step_cnt, wait_finish=True, is_ck_con=False):
++        if self.is_shutdown or self.is_timeout:
++            pass
++        if step_cnt != 0:
++            self.all_params = []
++        # self.run_cmd.send([self.oid, direct, step_us, step_cnt, 1 if is_ck_con else 0])
++        self.run_cmd.send([self.oid, direct, step_us, step_cnt])
++        t_start = time.time()
++        while not (self.is_shutdown or self.is_timeout) and wait_finish and ((time.time() - t_start) < (1.5 * 1000 * 1000 * step_us * step_cnt)) and len(self.all_params) != 2:
++            self.hx711s.delay_s(0.05)
++        pass
++
++    def send_heart_beat(self):
++        #if time.time() - self.last_send_heart > 0.1:
++        #    self.send_heart_beat_cmd.send([self.oid])
++        #    self.last_send_heart = time.time()
++        pass
++
++    cmd_DIRZCTL_help = "Test DIRZCTL."
++    # DIRZCTL DIRECT=1 STEP_US=1500 STEP_CNT=100
++    def cmd_DIRZCTL(self, gcmd):
++        index = gcmd.get_int('INDEX', len(self.steppers), minval=0, maxval=len(self.steppers))
++        direct = gcmd.get_int('DIRECT', 1, minval=0, maxval=1)
++        step_us = gcmd.get_int('STEP_US', 1500, minval=4, maxval=100000)
++        step_cnt = gcmd.get_int('STEP_CNT', 256, minval=0, maxval=10000)
++        self.check_and_run(direct, step_us, step_cnt, False, False)
++        pass
++
++
++def load_config(config):
++    return DirZCtl(config)
+diff --git a/klippy/extras/filter.py b/klippy/extras/filter.py
+new file mode 100644
+index 000000000..ad95dd3ab
+--- /dev/null
++++ b/klippy/extras/filter.py
+@@ -0,0 +1,125 @@
++# Support for 1-wire based temperature sensors
++#
++# Copyright (C) 2020 Alan Lord <alanslists@gmail.com>
++#
++# This file may be distributed under the terms of the GNU GPLv3 license.
++from logging import Filter
++from os import remove
++from time import time
++import mcu
++import math
++
++
++class RCTFilter:
++    def __init__(self):
++        pass
++
++    def ftr_val(self, vals):
++        out_vals = []
++        if len(vals) < 3:
++            return vals
++        for i in range(len(vals) - 2):   
++            tmp = [math.fabs(vals[i]), math.fabs(vals[i + 1]), math.fabs(vals[i + 2])]
++            index = tmp.index(min(tmp))
++            out_vals.append(vals[index + i])
++        out_vals.append(vals[-2])
++        out_vals.append(vals[-1])
++        return out_vals
++
++
++class RCHFilter:
++    def __init__(self, cut_frq_hz, acq_frq_hz):
++        self.cut_frq_hz = cut_frq_hz
++        self.acq_frq_hz = acq_frq_hz
++        pass
++
++    def ftr_val(self, vals):
++        out_vals = [0]
++        rc = 1. / 2. / math.pi / self.cut_frq_hz
++        coff = rc / (rc + 1. / self.acq_frq_hz)
++        for i in range(1, len(vals)):
++            out_vals.append((vals[i] - vals[i - 1] + out_vals[-1]) * coff)
++        return out_vals
++
++
++class RCLFilter:
++    def __init__(self, k1_new):
++        self.k1_new = k1_new
++        pass
++
++    def ftr_val(self, vals):
++        out_vals = [vals[0]]
++        for i in range(1, len(vals)):
++            out_vals.append(out_vals[-1] * (1 - self.k1_new) + vals[i] * self.k1_new)
++        return out_vals
++
++
++class Filter:
++    def __init__(self, config):
++        self.hft_hz = config.getfloat('hft_hz', default=5, minval=0.1, maxval=10.)
++        self.lft_k1 = config.getfloat('lft_k1', default=0.8, minval=0., maxval=1.)
++        self.lft_k1_oft = config.getfloat('lft_k1_oft', default=0.8, minval=0., maxval=1.)
++        self.lft_k1_cal = config.getfloat('lft_k1_cal', default=0.8, minval=0., maxval=1.)
++        pass
++    
++    def get_tft(self):
++        return RCTFilter()
++
++    def get_lft(self, k1):
++        return RCLFilter(k1)
++
++    def get_hft(self, cut_hz, acq_hz):
++        return RCHFilter(cut_frq_hz=cut_hz, acq_frq_hz=acq_hz)
++
++    def cal_offset_by_vals(self, s_count, new_valss, lft_k1, cut_len):
++        out_vals = []
++        tmp_vals = [[], [], [], []]
++        tft = RCTFilter()
++        lft = RCLFilter(lft_k1)
++        for i in range(s_count):
++            tmp_vals[i] = tft.ftr_val(new_valss[i])
++            tmp_vals[i] = lft.ftr_val(tmp_vals[i])
++        for i in range(len(tmp_vals[0])):
++            sums = 0
++            for j in range(s_count):
++                if i < len(tmp_vals[j]):
++                    sums += math.fabs(tmp_vals[j][i])
++            out_vals.append(sums)
++        if len(out_vals) > cut_len:
++            del out_vals[0:(len(out_vals) - cut_len)]
++        for i in range(s_count):
++            if len(tmp_vals[i]) > cut_len:
++                del tmp_vals[i][0:(len(tmp_vals[i]) - cut_len)]
++            for j in range(len(tmp_vals[i])):
++                tmp_vals[i][j] = abs(tmp_vals[i][j])
++        return out_vals, tmp_vals
++
++
++    def cal_filter_by_vals(self, s_count, now_valss, hft_hz, lft_k1, cut_len):
++        out_vals = []
++        tmp_vals = [[], [], [], []]
++        tft = RCTFilter()
++        hft = RCHFilter(hft_hz, 80)
++        lft = RCLFilter(lft_k1)
++        for i in range(0, s_count):
++            tmp_vals[i] = tft.ftr_val(now_valss[i])
++            tmp_vals[i] = hft.ftr_val(tmp_vals[i])
++            tmp_vals[i] = lft.ftr_val(tmp_vals[i])
++        for i in range(len(tmp_vals[0])):
++            sums = 0
++            for j in range(s_count):
++                if i < len(tmp_vals[j]):
++                    sums += math.fabs(tmp_vals[j][i])
++            out_vals.append(sums)
++        if len(out_vals) > cut_len:
++            del out_vals[0:(len(out_vals) - cut_len)]
++        for i in range(s_count):
++            if len(tmp_vals[i]) > cut_len:
++                del tmp_vals[i][0:(len(tmp_vals[i]) - cut_len)]
++            for j in range(len(tmp_vals[i])):
++                tmp_vals[i][j] = abs(tmp_vals[i][j])
++        return out_vals, tmp_vals
++
++
++def load_config(config):
++    return Filter(config)
+\ No newline at end of file
+diff --git a/klippy/extras/hx711s.py b/klippy/extras/hx711s.py
+new file mode 100644
+index 000000000..5d9aefb76
+--- /dev/null
++++ b/klippy/extras/hx711s.py
+@@ -0,0 +1,207 @@
++# Support for 1-wire based temperature sensors
++#
++# Copyright (C) 2020 Alan Lord <alanslists@gmail.com>
++#
++# This file may be distributed under the terms of the GNU GPLv3 license.
++from os import remove
++import time
++import mcu
++import math
++
++class HX711S:
++    def __init__(self, config):
++        self.printer = config.get_printer()
++        self.gcode = self.printer.lookup_object("gcode")
++        self.s_count = config.getint('count', 1, 1, 4)
++        self.base_avgs = [0, 0, 0, 0]
++        self.del_dirty = False
++        self.index_dirty = 0
++        self.start_tick = 0
++        self.need_wait = False
++        self.s_clk_pin = []
++        self.s_sdo_pin = []
++        self.all_params = []
++        self.all_vals = [[], [], [], []]
++        for i in range(self.s_count):
++            self.s_clk_pin.append(config.get('sensor%d_clk_pin' % i, None if i == 0 else self.s_clk_pin[i - 1]))
++            self.s_sdo_pin.append(config.get('sensor%d_sdo_pin' % i, None if i == 0 else self.s_sdo_pin[i - 1]))
++        self.mcu = mcu.get_printer_mcu(self.printer, config.get('use_mcu'))
++        self.oid = self.mcu.create_oid()
++        self.mcu.register_config_callback(self._build_config)
++        self.mcu.register_response(self._handle_debug_hx711s, "debug_hx711s", self.oid)
++        self.mcu.register_response(self._handle_result_hx711s, "result_hx711s", self.oid)
++        self.printer.register_event_handler('klippy:mcu_identify', self._handle_mcu_identify)
++        self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
++        self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
++        self.gcode.register_command('READ_HX711', self.cmd_READ_HX711, desc=self.cmd_READ_HX711_help)
++        self.pi_count = int(0)
++        self.show_msg = False
++        self.filter = None 
++        self.query_cmd = None
++        self.mcu_freq = 72000000
++        self.last_send_heart = 0.
++        self.is_shutdown = True
++        self.is_timeout = True
++        pass
++
++    def _build_config(self):
++        self.mcu.add_config_cmd("config_hx711s oid=%d hx711_count=%d" % (self.oid, self.s_count))
++        pins = self.printer.lookup_object("pins") 
++        for i in range(self.s_count):
++            clk_pin_params = pins.lookup_pin(self.s_clk_pin[i])
++            sdo_pin_params = pins.lookup_pin(self.s_sdo_pin[i])
++            self.mcu.add_config_cmd("add_hx711s oid=%d index=%d clk_pin=%s sdo_pin=%s" % (self.oid, i, clk_pin_params['pin'], sdo_pin_params['pin']))
++        # self.query_cmd = self.mcu.lookup_command("query_hx711s oid=%c times_read=%hu is_ck_con=%c", cq=None)
++        self.query_cmd = self.mcu.lookup_command("query_hx711s oid=%c times_read=%hu", cq=None)
++        self.filter = self.printer.lookup_object('filter')
++        self.mcu_freq = self.mcu.get_constant_float('CLOCK_FREQ')
++        pass
++
++    def _handle_mcu_identify(self):
++        # self.send_heart_beat_cmd = self.mcu.lookup_query_command(
++        #     "heart_beat_hx711s oid=%c",
++        #     "heart_beat_hx711s_result oid=%c",
++        #     oid=self.oid, cq=None)
++        pass
++
++        self.is_shutdown = False
++        self.is_timeout = False
++        pass
++
++    def _handle_debug_hx711s(self, params):
++        self.printer.lookup_object('prtouch').pnt_msg(str(params))
++        pass
++
++    def _handle_shutdown(self):
++        self.is_shutdown = True
++        pass
++
++    def _handle_disconnect(self):
++        self.is_timeout = True
++        pass
++
++    def _handle_result_hx711s(self, params):
++        while self.need_wait:
++            self.delay_s(0.001)
++        self.start_tick = self.start_tick if len(self.all_params) != 0 else params['nt']
++        if self.del_dirty and (params['vd'] != 0 or params['it'] > 20) and self.index_dirty == 0:
++            self.index_dirty = 1
++            return
++        self.index_dirty -= 1 if self.index_dirty == 1 else 0
++        self.all_params.append(params)
++        for i in range(self.s_count):
++            self.all_vals[i].append(params['v%d' % i] - self.base_avgs[i])
++        if self.show_msg:
++            self.gcode.respond_info('Hx711 Val=' + str(params))
++        if len(self.all_params) > self.pi_count:
++            del self.all_params[0]
++            for i in range(self.s_count):
++                del self.all_vals[i][0]
++        pass
++
++    def query_start(self, pi_count, cycle_count, del_dirty=False, show_msg=False, is_ck_con=False):
++        if self.is_shutdown or self.is_timeout:
++            pass
++        if cycle_count != 0:
++            self.pi_count = pi_count
++            self.all_params = []
++            self.all_vals = [[], [], [], []]
++            self.show_msg = show_msg
++            self.del_dirty = del_dirty
++            self.index_dirty = 0
++        # self.query_cmd.send([self.oid, cycle_count, 1 if is_ck_con else 0])
++        self.query_cmd.send([self.oid, cycle_count])
++        pass
++
++    def get_params(self):
++        self.need_wait = True
++        tmps = [x for x in self.all_params]
++        self.need_wait = False
++        return tmps, self.start_tick
++
++    def get_vals(self):
++        self.need_wait = True
++        tmps = [[], [], [], []]
++        for i in range(self.s_count):
++            tmps[i] = [x for x in self.all_vals[i]]
++        self.need_wait = False
++        return tmps
++
++    def delay_s(self, delay_s):
++        toolhead = self.printer.lookup_object("toolhead")
++        reactor = self.printer.get_reactor()
++        eventtime = reactor.monotonic()
++        if not self.printer.is_shutdown():
++            toolhead.get_last_move_time()
++            eventtime = reactor.pause(eventtime + delay_s)
++            pass
++
++    def send_heart_beat(self):
++        # if time.time() - self.last_send_heart > 0.1:
++        #     self.send_heart_beat_cmd.send([self.oid])
++        #     self.last_send_heart = time.time()
++        pass
++
++    def read_base(self, cnt, max_hold, reset_zero=True):
++        avgs = [0, 0, 0, 0]
++        rvs = [[], [], [], []]
++        for i in range(3):
++            self.base_avgs = [0, 0, 0, 0]
++            avgs = [0, 0, 0, 0]
++            self.query_start(cnt, cnt + 5, del_dirty=True, show_msg=False)
++            t_last = time.time()
++            while not (self.is_shutdown or self.is_timeout) and len(self.get_vals()[0]) < cnt and (time.time() - t_last) < cnt * 0.010 * 15:
++                self.delay_s(0.010)
++                pass
++            vals = self.get_vals()
++            if len(vals[0]) < cnt:
++                raise self.printer.command_error("""{"code":"key503", "msg":"z-Touch::read_base: Can not read z-Touch data."}""")
++                
++            for j in range(self.s_count):
++                del vals[j][0:int(len(vals[j]) / 2)]
++            for j in range(self.s_count):
++                del vals[j][vals[j].index(min(vals[j]))]
++                del vals[j][vals[j].index(min(vals[j]))]
++                del vals[j][vals[j].index(max(vals[j]))]
++                del vals[j][vals[j].index(max(vals[j]))]
++            rvs = [[], [], [], []]
++            tf = self.filter.get_tft()
++            lf = self.filter.get_lft(0.5)
++            for j in range(self.s_count):
++                vals[j] = tf.ftr_val(vals[j])
++                vals[j] = lf.ftr_val(vals[j])
++                rvs[j].append(min(vals[j]))
++                rvs[j].append(sum(vals[j]) / len(vals[j]))
++                rvs[j].append(max(vals[j]))
++                avgs[j] = sum(vals[j]) / len(vals[j])
++                self.printer.lookup_object('prtouch').pnt_msg('READ_BASE ch=%d min=%.2f avg=%.2f max=%.2f' % (j, rvs[j][-3], avgs[j], rvs[j][-1]))
++            if reset_zero:
++                self.base_avgs = avgs
++
++            sum_max = 0
++            for j in range(self.s_count):
++                sum_max += math.fabs(rvs[j][2] - rvs[j][0])
++            if sum_max < max_hold * 2:
++                break
++        return avgs, rvs
++
++    cmd_READ_HX711_help = "Read hx711s vals"
++
++    def cmd_READ_HX711(self, gcmd):
++        cnt = gcmd.get_int('C', 1, minval=1, maxval=9999) 
++        self.query_start(cnt, cnt, False, False, False)
++        self.delay_s(1.)
++        self.base_avgs = [0, 0, 0, 0]
++        vals = self.get_vals()
++        for i in range(self.s_count):
++            self.gcode.respond_info('CH%d=' % i)
++            sv = '['
++            for j in range(len(vals[i])):
++                sv += '%.2f, ' % vals[i][j]
++            self.gcode.respond_info(sv + ']')
++        self.read_base(40, 500000)
++        pass
++
++
++def load_config(config):
++    return HX711S(config)
+diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
+new file mode 100644
+index 000000000..1410a7a70
+--- /dev/null
++++ b/klippy/extras/prtouch.py
+@@ -0,0 +1,819 @@
++# Support for button detection and callbacks
++#
++# Copyright (C) 2022-12-09  CC <wangyulong878@sina.com>
++#
++# This file may be distributed under the terms of the GNU GPLv3 license.
++import logging
++import math
++import random
++from . import probe
++import mcu
++import time
++import socket
++
++class PRTouchCFG:
++    def __init__(self, config):
++        self.base_count = config.getint('base_count', default=40, minval=10, maxval=100)
++        self.pi_count = config.getint('pi_count', default=32, minval=16, maxval=128)
++        self.min_hold = config.getint('min_hold', default=3000, minval=100, maxval=50000)
++        self.max_hold = config.getint('max_hold', default=50000, minval=100, maxval=100000)
++        self.hot_min_temp = config.getfloat('s_hot_min_temp', default=140, minval=80, maxval=200)
++        self.hot_max_temp = config.getfloat('s_hot_max_temp', default=200, minval=180, maxval=300)
++        self.bed_max_temp = config.getfloat('s_bed_max_temp', default=60, minval=45, maxval=100)
++        self.pa_fil_len_mm = config.getint('pa_fil_len_mm', default=2, minval=2, maxval=100)
++        self.pa_fil_dis_mm = config.getint('pa_fil_dis_mm', default=30, minval=2, maxval=100)
++        self.pa_clr_dis_mm = config.getint('pa_clr_dis_mm', default=20, minval=2, maxval=100)
++        self.pa_clr_down_mm = config.getfloat('pa_clr_down_mm', default=-0.1, minval=-1, maxval=1)
++        self.clr_noz_start_x = config.getfloat('clr_noz_start_x', default=0, minval=0, maxval=1000)
++        self.clr_noz_start_y = config.getfloat('clr_noz_start_y', default=0, minval=0, maxval=1000)
++        self.clr_noz_len_x = config.getfloat('clr_noz_len_x', default=0, minval=self.pa_clr_dis_mm + 6, maxval=1000)
++        self.clr_noz_len_y = config.getfloat('clr_noz_len_y', default=0, minval=0, maxval=1000)
++        self.bed_max_err = config.getint('bed_max_err', default=2, minval=2, maxval=10)
++        self.max_z = config.getsection('stepper_z').getfloat('position_max', default=300, minval=100, maxval=500)
++        self.g29_xy_speed = config.getfloat('g29_xy_speed', default=150, minval=10, maxval=1000)
++        self.fix_z_offset = config.getfloat('fix_z_offset', default=0.0, minval=-1, maxval=1)
++        self.max_dis_bef_g28 = config.getfloat('max_dis_bef_g28', default=10, minval=0, maxval=50)
++        self.dead_zone_bef_g28 = config.getfloat('dead_zone_bef_g28', default=self.max_dis_bef_g28 / 2, minval=0, maxval=50) 
++        self.g28_sta0_speed = config.getfloat('g28_sta0_speed', default=2.0, minval=0.1, maxval=10)
++        self.g28_sta1_speed = config.getfloat('g28_sta1_speed', default=2.5, minval=0.1, maxval=10)
++        self.g29_rdy_speed = config.getfloat('g29_rdy_speed', default=2.5, minval=0.1, maxval=10)
++        self.g29_speed = config.getfloat('g29_speed', default=2.0, minval=0.1, maxval=10)
++        self.show_msg = config.getboolean('show_msg', default=False)
++        self.best_above_z = config.getfloat('best_above_z', default=1.5, minval=0.5, maxval=10)
++        self.g28_wait_cool_down = config.getboolean('g28_wait_cool_down', default=False)
++        self.shake_cnt = config.getint('shake_cnt', default=4, minval=1, maxval=512)
++        self.shake_range = config.getint('shake_range', default=0.5, minval=0.1, maxval=2)
++        self.shake_max_velocity = config.getfloat('shake_max_velocity', default=100, minval=1, maxval=5000)
++        self.shake_max_accel = config.getfloat('shake_max_accel', default=1000, minval=1, maxval=50000)
++        self.g28_sta0_min_hold = config.getint('g28_sta0_min_hold', default=self.min_hold * 2, minval=100, maxval=100000)
++        self.need_measure_gap = config.getboolean('need_measure_gap', default=True)
++        self.gap_dis_range = config.getfloat('gap_dis_range', default=0.6, minval=0.2, maxval=2)
++        self.z_gap_00 = config.getfloat('z_gap_00', default=0, minval=-1, maxval=1)
++        self.z_gap_01 = config.getfloat('z_gap_01', default=0, minval=-1, maxval=1)
++        self.z_gap_10 = config.getfloat('z_gap_10', default=0, minval=-1, maxval=1)
++        self.z_gap_11 = config.getfloat('z_gap_11', default=0, minval=-1, maxval=1)
++        self.check_bed_mesh_max_err = config.getfloat('check_bed_mesh_max_err', default=0.2, minval=0.01, maxval=1)
++        self.tri_wave_ip    = config.get('tri_wave_ip', None)
++        self.self_z_offset = config.getfloat('self_z_offset', default=0.0, minval=-2, maxval=2)
++
++        self.stored_profs = config.get_prefix_sections('prtouch')
++        self.stored_profs = self.stored_profs[1] if (len(self.stored_profs) == 2 and self.need_measure_gap) else None
++        pass
++
++
++class PRTouchVAL:
++    def __init__(self, config):
++        self.out_index = 0
++        self.out_val_mm = 0.
++        self.rdy_pos = [[0., 0., 0.] * 4]
++        self.gap_pos = None
++        self.g29_cnt = int(0)
++        self.re_probe_cnt = 0
++        self.home_xy = None
++        self.jump_probe_ready = False
++        pass
++
++
++class PRTouchOBJ:
++    def __init__(self, config):
++        self.printer = config.get_printer()
++        self.toolhead = None
++        self.hx711s = None
++        self.pheaters = None
++        self.heater_hot = None
++        self.heater_bed = None
++        self.bed_mesh = None
++        self.mcu = None
++        self.dirzctl = None
++        self.kin = None
++        self.gcode = self.printer.lookup_object('gcode')
++        pass
++
++    def find_objs(self):
++        self.toolhead = self.printer.lookup_object('toolhead')
++        self.hx711s = self.printer.lookup_object('hx711s')
++        self.pheaters = self.printer.lookup_object('heaters')
++        self.heater_hot = self.printer.lookup_object('extruder').heater
++        self.heater_bed = self.printer.lookup_object('heater_bed').heater
++        self.bed_mesh = self.printer.lookup_object('bed_mesh')
++        self.dirzctl = self.printer.lookup_object('dirzctl')
++        self.mcu = self.hx711s.mcu
++        self.filter = self.printer.lookup_object('filter')
++        self.kin = self.toolhead.get_kinematics()
++        pass
++
++
++class PRTouchEndstopWrapper:
++    def __init__(self, config):
++        self.cfg = PRTouchCFG(config)
++        self.val = PRTouchVAL(config)
++        self.obj = PRTouchOBJ(config)
++
++        self.obj.printer.register_event_handler('klippy:mcu_identify', self._handle_mcu_identify)
++        self.obj.gcode.register_command('PRTOUCH_TEST', self.cmd_PRTOUCH_TEST, desc=self.cmd_PRTOUCH_TEST_help)
++        self.obj.gcode.register_command('PRTOUCH_READY', self.cmd_PRTOUCH_READY, desc=self.cmd_PRTOUCH_READY_help)
++        self.obj.gcode.register_command('NOZZLE_CLEAR', self.cmd_NOZZLE_CLEAR, desc=self.cmd_NOZZLE_CLEAR_help)
++        self.obj.gcode.register_command('CHECK_BED_MESH', self.cmd_CHECK_BED_MESH, desc=self.cmd_CHECK_BED_MESH_help)
++        self.obj.gcode.register_command('MEASURE_GAP_TEST', self.cmd_MEASURE_GAP_TEST, desc=self.cmd_MEASURE_GAP_TEST_help)
++        pass
++
++    def _handle_mcu_identify(self):
++        self.obj.find_objs()
++        min_x, min_y = self.obj.bed_mesh.bmc.mesh_min
++        max_x, max_y = self.obj.bed_mesh.bmc.mesh_max
++        self.val.rdy_pos = [[min_x, min_y, self.cfg.bed_max_err + 1.],
++                            [min_x, max_y, self.cfg.bed_max_err + 1.],
++                            [max_x, max_y, self.cfg.bed_max_err + 1.],
++                            [max_x, min_y, self.cfg.bed_max_err + 1.]]
++        self.val.gap_pos = [[min_x + 1., min_y + 1., self.cfg.z_gap_00], # if self.cfg.stored_profs is None else self.cfg.stored_profs.getfloat('z_gap_00', default=self.cfg.z_gap_00, minval=0, maxval=1)],
++                            [min_x + 1., max_y - 1., self.cfg.z_gap_01], # if self.cfg.stored_profs is None else self.cfg.stored_profs.getfloat('z_gap_01', default=self.cfg.z_gap_01, minval=0, maxval=1)],
++                            [max_x - 1., max_y - 1., self.cfg.z_gap_11], # if self.cfg.stored_profs is None else self.cfg.stored_profs.getfloat('z_gap_11', default=self.cfg.z_gap_11, minval=0, maxval=1)],
++                            [max_x - 1., min_y + 1., self.cfg.z_gap_10]] # if self.cfg.stored_profs is None else self.cfg.stored_profs.getfloat('z_gap_10', default=self.cfg.z_gap_10, minval=0, maxval=1)]]
++        if self.cfg.clr_noz_start_x <= 0 or self.cfg.clr_noz_start_y <= 0 or self.cfg.clr_noz_len_x <= 0 or self.cfg.clr_noz_len_y <= 0:
++            self.cfg.clr_noz_start_x = (max_x - min_x) * 1 / 3 + min_x
++            self.cfg.clr_noz_start_y = max_y - 6
++            self.cfg.clr_noz_len_x = (max_x - min_x) * 1 / 3
++            self.cfg.clr_noz_len_y = 5
++        self.val.home_xy = [(max_x - min_x) / 2 + min_x, (max_y - min_y) / 2 + min_y]
++        pass
++
++    def get_mcu(self):
++        return self.obj.mcu
++
++    def multi_probe_begin(self):
++        pass
++
++    def multi_probe_end(self):
++        pass
++
++    def probe_prepare(self, hmove):
++        pass
++
++    def home_start(self, print_time, sample_time, sample_count, rest_time,
++                   triggered=True):
++        return True
++
++    def add_stepper(self, stepper):
++        pass
++
++    def get_steppers(self):
++        return self.obj.dirzctl.steppers
++
++    def ck_sys_sta(self):
++        return not self.obj.hx711s.is_shutdown and not self.obj.hx711s.is_timeout and  not self.obj.dirzctl.is_shutdown and not self.obj.dirzctl.is_timeout
++
++    def _ck_g28ed(self, is_precision=True):
++        for i in range(3):
++            if self.obj.kin.limits[i][0] > self.obj.kin.limits[i][1]:
++                self.obj.gcode.run_script_from_command('G28')
++                break
++        pass
++
++    def _move(self, pos, speed, wait=True):
++        if not self.obj.hx711s.is_shutdown and not self.obj.hx711s.is_timeout and  not self.obj.dirzctl.is_shutdown and not self.obj.dirzctl.is_timeout:
++            # self.obj.toolhead.manual_move(pos, speed)
++            self.obj.gcode.run_script_from_command('G1 F%d X%.3f Y%.3f Z%.3f' % (speed * 60, pos[0], pos[1], pos[2]) if len(pos) >= 3 else 'G1 F%d X%.3f Y%.3f' % (speed * 60, pos[0], pos[1]))
++            if wait:
++                self.obj.toolhead.wait_moves()
++            pass
++
++    def _check_index(self, index):
++        if (index <= self.cfg.pi_count - 3) and (index >= self.cfg.pi_count * 2 / 3):
++            return True
++        return False
++
++    def _get_linear2(self, p1, p2, po, is_base_x):
++        if (math.fabs(p1[0] - p2[0]) < 0.001 and is_base_x) or (math.fabs(p1[1] - p2[1]) < 0.001 and not is_base_x):
++            return po
++        a = (p2[2] - p1[2]) / ((p2[0] - p1[0]) if is_base_x else (p2[1] - p1[1]))
++        b = p1[2] - (p1[0] if is_base_x else p1[1]) * a
++        po[2] = a * (po[0] if is_base_x else po[1]) + b
++        return po
++
++    def _pnt_tri_msg(self, index, msg,  ary):
++        if self.cfg.show_msg:
++            self.pnt_msg('TRI SUCCESS BY: ' + msg)
++            self.pnt_array('TRI CH=%d ARY=' % index, ary)
++        pass
++
++    def _check_trigger(self, arg_index, fit_vals, unfit_vals, min_hold, max_hold):
++        all_params, tick = self.obj.dirzctl.get_params()
++        if len(all_params) == 2:
++            self._pnt_tri_msg(arg_index, 'Tri by Dirzctl run over!', fit_vals)
++            return True
++        fit_vals_t = [x for x in fit_vals]
++        self.val.out_index = self.cfg.pi_count - 1
++        if len(fit_vals) >= (self.cfg.pi_count / 2) and math.fabs(fit_vals[-1]) >= max_hold and \
++                math.fabs(fit_vals[-2]) >= max_hold and math.fabs(fit_vals[-3]) >= max_hold:
++            self._pnt_tri_msg(arg_index, 'Tri by out max_hold!', fit_vals)
++            return True
++        if len(fit_vals) != self.cfg.pi_count:
++            return False           
++        for i in range(1, self.cfg.pi_count - 1):
++            if fit_vals_t[i] >= max_hold and fit_vals_t[i - 1] < (max_hold / 2) and fit_vals_t[i + 1] < (max_hold / 2):
++                fit_vals_t[i] = fit_vals_t[i - 1]
++        
++        vals_p = [x for x in fit_vals_t]
++        max_val = max(vals_p)
++        min_val = min(vals_p)
++        max_val += 1 if (max_val - min_val) == 0 else 0
++        for i in range(len(vals_p)):
++            vals_p[i] = (vals_p[i] - min_val) / (max_val - min_val)
++        angle = math.atan((vals_p[-1] - vals_p[0]) / len(vals_p))
++        sin_angle = math.sin(-angle)
++        cos_angle = math.cos(-angle)
++        for i in range(len(vals_p)):
++            vals_p[i] = (i - 0) * sin_angle + (vals_p[i] - 0) * cos_angle + 0
++        self.val.out_index = vals_p.index(min(vals_p))
++        if(self.val.out_index > 0):
++            for i in range(self.val.out_index, self.cfg.pi_count):
++                fit_vals_t[self.val.out_index] = fit_vals_t[self.val.out_index] * (self.obj.filter.lft_k1_oft / 2) + fit_vals_t[self.val.out_index - 1] * (1 - (self.obj.filter.lft_k1_oft / 2))
++        vals_p = [x for x in fit_vals_t]
++
++        if not (fit_vals_t[-1] > fit_vals_t[-2] > fit_vals_t[-3]):
++            return False
++        max_val = max(fit_vals_t[0:(self.cfg.pi_count - 3)])
++        if not ((fit_vals_t[-1] > max_val) and (fit_vals_t[-2] > max_val) and (fit_vals_t[-3] > max_val)):
++            return False
++        max_val = max(fit_vals_t)
++        min_val = min(fit_vals_t)
++        for i in range(0, self.cfg.pi_count):
++            fit_vals_t[i] = (fit_vals_t[i] - min_val) / (max_val - min_val)
++        for i in range(0, self.cfg.pi_count - 1):
++            if (fit_vals_t[-1] - fit_vals_t[i]) / ((self.cfg.pi_count - i) * 1. / self.cfg.pi_count) < 0.8:
++                return False
++        if fit_vals[-1] < min_hold or fit_vals[-2] < (min_hold / 2) or fit_vals[-3] < (min_hold / 3):
++            return False
++        self._pnt_tri_msg(arg_index, 'Tri by fit all rule!', vals_p)
++        return True
++
++    def _set_hot_temps(self, temp, fan_spd, wait=False, err=5):
++        self.obj.pheaters.set_temperature(self.obj.heater_hot, temp, False)
++        self.obj.gcode.run_script_from_command('M106 P0 S%d' % (fan_spd))
++        # self.obj.gcode.run_script_from_command('M106 P1 S%d' % (fan_spd))
++        self.obj.gcode.run_script_from_command('M106 P2 S%d' % (fan_spd))
++        # self.obj.gcode.run_script_from_command('SET_PIN PIN=fan0 VALUE=%d' % (fan_spd))
++        # self.obj.gcode.run_script_from_command('SET_PIN PIN=fan1 VALUE=%d' % (fan_spd))
++        # self.obj.gcode.run_script_from_command('SET_PIN PIN=fan2 VALUE=%d' % (fan_spd))
++        if wait:
++            while self.ck_sys_sta() and abs(self.obj.heater_hot.target_temp - self.obj.heater_hot.smoothed_temp) > err and self.obj.heater_hot.target_temp > 0:
++                self.obj.hx711s.delay_s(0.100) 
++        pass
++
++    def _set_bed_temps(self, temp, wait=False, err=5):
++        self.obj.pheaters.set_temperature(self.obj.heater_bed, temp, False)           
++        if wait:
++            while self.ck_sys_sta() and abs(self.obj.heater_bed.target_temp - self.obj.heater_bed.smoothed_temp) > err and self.obj.heater_bed.target_temp > 0:
++                self.obj.hx711s.delay_s(0.100)          
++        pass
++
++    def pnt_msg(self, msg):
++        logging.info(msg)
++        if self.cfg.show_msg:
++            self.obj.gcode.respond_info(msg)
++        pass
++
++    def pnt_array(self, title, ary, lent=32):
++        logging.info('[%s] %s' , title, str(ary))
++        if self.cfg.show_msg:
++            st = title + ' ['
++            for i in range(len(ary) - lent, len(ary)):
++                st = st + "%.2f, " % (ary[i])
++            self.pnt_msg(st + ']')
++        pass
++
++    def _probe_times(self, max_times, rdy_pos, speed_mm, min_dis_mm, max_z_err, min_hold, max_hold):
++        o_mm = 0
++        rdy_pos_z = rdy_pos[2]
++        now_pos = self.obj.toolhead.get_position()
++        self._move(now_pos[:2] + [rdy_pos[2]], self.cfg.g29_rdy_speed)        
++        self._move(rdy_pos, self.cfg.g29_xy_speed)
++        for i in range(max_times):
++            o_index0, o_mm0, deal_sta = self.probe_by_step(rdy_pos[:2] + [rdy_pos_z], speed_mm, min_dis_mm, min_hold, max_hold, True)
++            if not deal_sta and rdy_pos_z == rdy_pos[2]:
++                rdy_pos_z += 2
++                continue
++            o_index1, o_mm1, deal_sta = self.probe_by_step(rdy_pos[:2] + [rdy_pos_z], speed_mm, min_dis_mm, min_hold, max_hold, True)
++            o_mm = (o_mm0 + o_mm1) / 2
++            if math.fabs(o_mm0 - o_mm1) <= max_z_err or not self.ck_sys_sta():
++                break
++            self.val.re_probe_cnt += 1
++            self.pnt_msg('***_probe_times must be reprobe= o_mm0=%.2f, o_mm1=%.2f' % (o_mm0, o_mm1))
++        return o_mm
++    
++    def send_wave_tri(self, ch, ary):
++        if self.cfg.tri_wave_ip is None:
++            return
++        msg = '%d' % ch
++        for i in range(len(ary)):
++            msg += ',%d' % ary[i]
++        ss = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++        ss.sendto(msg.encode(), (str(self.cfg.tri_wave_ip), 21021))
++        ss.close()    
++
++    def get_best_rdy_z(self, rdy_x, rdy_y, base_pos=None):
++        if not base_pos:
++            base_pos = self.val.rdy_pos
++        p_left = [base_pos[0][0], rdy_y, 0]
++        p_right = [base_pos[2][0], rdy_y, 0]
++        p_mid = [rdy_x, rdy_y, 0]
++        p_left = self._get_linear2(base_pos[0], base_pos[1], p_left, False)
++        p_right = self._get_linear2(base_pos[2], base_pos[3], p_right, False)
++        p_mid = self._get_linear2(p_left, p_right, p_mid, True)
++        self.pnt_msg("Get best rdy z: Src=%s, x=%.2f, y=%.2f, cal_z=%.2f" % (('RDY' if base_pos == self.val.rdy_pos else 'GAP'), rdy_x, rdy_y, p_mid[2]))
++        return p_mid[2] if p_mid[2] < self.cfg.bed_max_err else self.cfg.bed_max_err
++                
++    def shake_motor(self, cnt):
++        max_velocity = self.obj.toolhead.max_velocity
++        max_accel = self.obj.toolhead.max_accel
++        max_z_velocity = self.obj.toolhead.kin.max_z_velocity
++        max_z_accel = self.obj.toolhead.kin.max_z_accel
++
++        self.obj.toolhead.max_velocity = self.cfg.shake_max_velocity
++        self.obj.toolhead.max_accel = self.cfg.shake_max_accel
++        self.obj.toolhead.kin.max_z_velocity = self.cfg.shake_max_velocity
++        self.obj.toolhead.kin.max_z_accel = self.cfg.shake_max_accel
++
++        now_pos = self.obj.toolhead.get_position()
++        for i in range(int(cnt / 2)):
++            self.obj.gcode.run_script_from_command('G1 X%.2f Y%.2f Z%.2f F600' % (now_pos[0] - self.cfg.shake_range, now_pos[1] - self.cfg.shake_range, now_pos[2] - self.cfg.shake_range / 2))
++            self.obj.gcode.run_script_from_command('G1 X%.2f Y%.2f Z%.2f F600' % (now_pos[0] + self.cfg.shake_range, now_pos[1] - self.cfg.shake_range, now_pos[2] + self.cfg.shake_range / 2))
++            self.obj.gcode.run_script_from_command('G1 X%.2f Y%.2f Z%.2f F600' % (now_pos[0] + self.cfg.shake_range, now_pos[1] + self.cfg.shake_range, now_pos[2] - self.cfg.shake_range / 2))
++            self.obj.gcode.run_script_from_command('G1 X%.2f Y%.2f Z%.2f F600' % (now_pos[0] - self.cfg.shake_range, now_pos[1] + self.cfg.shake_range, now_pos[2] + self.cfg.shake_range / 2))
++            while len(self.obj.toolhead.move_queue.queue) >= 4 and self.ck_sys_sta():
++                self.obj.hx711s.delay_s(0.010)
++        self._move(now_pos, self.cfg.g29_xy_speed)
++
++        self.obj.toolhead.max_velocity = max_velocity
++        self.obj.toolhead.max_accel = max_accel
++        self.obj.toolhead.kin.max_z_velocity = max_z_velocity
++        self.obj.toolhead.kin.max_z_accel = max_z_accel
++        pass
++
++    def clear_nozzle(self, hot_min_temp, hot_max_temp, bed_max_temp, min_hold, max_hold):
++        min_x, min_y = self.cfg.clr_noz_start_x, self.cfg.clr_noz_start_y
++        max_x, max_y = self.cfg.clr_noz_start_x + self.cfg.clr_noz_len_x, self.cfg.clr_noz_start_y + self.cfg.clr_noz_len_y
++        self._set_bed_temps(temp=bed_max_temp, wait=False)
++        self._set_hot_temps(temp=hot_min_temp, fan_spd=0, wait=False, err=10)
++        self._ck_g28ed(False)
++        random.seed(time.time())  
++        cur_pos = self.obj.toolhead.get_position()
++        src_pos = [min_x + random.uniform(0, self.cfg.clr_noz_len_x - self.cfg.pa_clr_dis_mm - 5), 
++                   min_y + random.uniform(0, self.cfg.clr_noz_len_y), self.cfg.bed_max_err + 1, cur_pos[3]]
++        end_pos = [src_pos[0] + self.cfg.pa_clr_dis_mm, src_pos[1], src_pos[2], src_pos[3]]
++        self._set_hot_temps(temp=hot_min_temp, fan_spd=0, wait=True, err=10)   
++        src_pos[2] = self._probe_times(3, [src_pos[0] - 5, src_pos[1], src_pos[2]], self.cfg.g29_speed, 10, 0.2, min_hold * 2, max_hold)
++        self._set_hot_temps(temp=hot_min_temp + 40, fan_spd=0, wait=False, err=10)
++        end_pos[2] = self._probe_times(3, [end_pos[0] - 5, end_pos[1], end_pos[2]], self.cfg.g29_speed, 10, 0.2, min_hold * 2, max_hold)     
++        self._move(src_pos[:2] + [self.cfg.bed_max_err + 1], self.cfg.g29_xy_speed) 
++        self._move(src_pos[:2] + [src_pos[2] + 0.2], self.cfg.g29_rdy_speed) 
++        self._set_hot_temps(temp=hot_max_temp, fan_spd=0, wait=True, err=10)
++        self._set_hot_temps(temp=hot_min_temp, fan_spd=0, wait=False)
++        self._move(end_pos[:2] + [end_pos[2] + self.cfg.pa_clr_down_mm], self.cfg.g29_speed)
++        self._set_hot_temps(temp=hot_min_temp, fan_spd=255, wait=True, err=5)
++        self._move([end_pos[0] + 10, end_pos[1], end_pos[2] + 10], self.cfg.g29_speed)
++        self._set_hot_temps(temp=hot_min_temp, fan_spd=0, wait=False) 
++        self._set_bed_temps(temp=bed_max_temp, wait=True, err=5)
++
++        self._move(self.val.home_xy + [10], self.cfg.g29_xy_speed)
++        self.obj.gcode.run_script_from_command('G28 Z')
++        pass
++
++    def measure_gap(self, zero_z):
++        min_dis_mm = self.cfg.gap_dis_range
++        speed_mm = self.cfg.gap_dis_range
++        p0_vals = None
++        p1_vals = None
++
++        rd_cnt = int(2 * 80 * (min_dis_mm / speed_mm))            
++        step_cnt = int(min_dis_mm / (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base))
++        step_us = int(((min_dis_mm / speed_mm) * 1000 * 1000) / step_cnt)
++
++        now_pos = self.obj.toolhead.get_position()  
++        self._move(now_pos[:2] + [zero_z + min_dis_mm / 2, now_pos[3]], self.cfg.g29_rdy_speed)
++        self.obj.hx711s.read_base(int(self.cfg.base_count / 2), self.cfg.max_hold)
++
++        self.obj.hx711s.query_start(rd_cnt, rd_cnt, del_dirty=False, show_msg=False)       
++        self.obj.dirzctl.check_and_run(0, int(step_us), int(step_cnt), wait_finish=True)
++        p0_valss = self.obj.hx711s.get_vals()
++
++        self.obj.hx711s.query_start(rd_cnt, rd_cnt, del_dirty=False, show_msg=False)       
++        self.obj.dirzctl.check_and_run(1, int(step_us), int(step_cnt), wait_finish=True)
++        p1_valss = self.obj.hx711s.get_vals()
++
++        self.obj.hx711s.query_start(rd_cnt, int(0), del_dirty=False, show_msg=False)
++        if len(p0_valss[0]) == 0 or len(p1_valss[0]) == 0:
++            self.pnt_msg('measure_gap: Error! Cannot recv datas from hx711s!!!.')
++            return 0
++        
++        self.pnt_msg('---------------------------------')
++        for i in range(int(self.obj.hx711s.s_count)):
++            self.pnt_array('p0_%d_valss = ' % i, p0_valss[i], len(p0_valss[i]))
++        self.pnt_msg('---------------------------------')
++        for i in range(int(self.obj.hx711s.s_count)):
++            self.pnt_array('p1_%d_valss = ' % i, p1_valss[i], len(p1_valss[i]))
++        self.pnt_msg('---------------------------------')
++
++        p0_diss = []
++        p1_diss = []
++        gaps = []
++        for gap_index in range(int(self.obj.hx711s.s_count)):
++            p0_vals = p0_valss[gap_index]
++            p1_vals = p1_valss[gap_index]
++
++            if p0_vals[0] > p0_vals[-1]:
++                p0_vals = [item * -1 for item in p0_vals]
++
++            if p1_vals[0] < p1_vals[-1]:
++                p1_vals = [item * -1 for item in p1_vals]
++
++            max_val = max(p0_vals)
++            min_val = min(p0_vals)
++            for i in range(len(p0_vals)):
++                p0_vals[i] = (p0_vals[i] - min_val) / (max_val - min_val)
++            angle = math.atan((p0_vals[-1] - p0_vals[0]) / len(p0_vals))
++            sin_angle = math.sin(-angle)
++            cos_angle = math.cos(-angle)
++            for i in range(len(p0_vals)):
++                p0_vals[i] = (i - 0) * sin_angle + (p0_vals[i] - 0) * cos_angle + 0
++            p0_out_index = p0_vals.index(min(p0_vals))
++            p0_dis = (len(p0_vals) - p0_out_index) * 0.012 * speed_mm
++            p0_diss.append(p0_dis)
++
++            p1_vals = p1_vals[::-1]
++            max_val = max(p1_vals)
++            min_val = min(p1_vals)
++            for i in range(len(p1_vals)):
++                p1_vals[i] = (p1_vals[i] - min_val) / (max_val - min_val)
++            angle = math.atan((p1_vals[-1] - p1_vals[0]) / len(p1_vals))
++            sin_angle = math.sin(-angle)
++            cos_angle = math.cos(-angle)
++            for i in range(len(p1_vals)):
++                p1_vals[i] = (i - 0) * sin_angle + (p1_vals[i] - 0) * cos_angle + 0
++            p1_out_index = p1_vals.index(min(p1_vals))
++            p1_dis = (len(p1_vals) - p1_out_index) * 0.012 * speed_mm
++            p1_diss.append(p1_dis)
++
++            gaps.append(p1_dis - p0_dis)
++            pass
++
++        self.pnt_array('measure_gap: p0_diss = ', p0_diss, len(p0_diss))
++        self.pnt_array('measure_gap: p1_diss = ', p1_diss, len(p1_diss))
++        self.pnt_array('measure_gap: gaps = ', gaps, len(gaps))      
++
++        v_cnt = int(0)
++        v_gap = 0.
++        for i in range(int(self.obj.hx711s.s_count)):
++            if not ((0 < p0_diss[i] < min_dis_mm) and (0 < p1_diss[i] < min_dis_mm) and (0 <= gaps[i] < 0.2)):
++                continue
++            v_cnt += 1
++            v_gap += (gaps[i] if gaps[i] <= 0.1 else 0.1)
++            pass
++
++        v_gap = (0 if v_cnt == 0 else (v_gap / v_cnt))
++
++
++        self.pnt_msg('measure_gap: v_cnt=%d v_gap = %.2f' % (v_cnt, v_gap)) 
++
++        return v_gap
++
++    def _gap_times(self, max_times, zero_pos):
++        gaps = []
++        now_pos = self.obj.toolhead.get_position()          
++        for i in range(max_times):
++            self._move(now_pos[:2] + [zero_pos + 2, now_pos[3]], self.cfg.g29_rdy_speed)
++            self.shake_motor(int(self.cfg.shake_cnt / 2))
++            gaps.append(self.measure_gap(zero_pos))
++        gaps.sort()
++        self.pnt_array('Gap measure vals = ', gaps, len(gaps))
++        now_pos = self.obj.toolhead.get_position()  
++        self._move(now_pos[:2] + [self.cfg.bed_max_err + 1., now_pos[3]], self.cfg.g29_rdy_speed)
++        return gaps[int((max_times + 1) / 2)]
++
++    def probe_ready(self):
++        if self.val.jump_probe_ready:
++            self.val.jump_probe_ready = False
++            return False
++        self._ck_g28ed()
++        min_x, min_y = self.obj.bed_mesh.bmc.mesh_min
++        max_x, max_y = self.obj.bed_mesh.bmc.mesh_max
++        random.seed(time.time()) 
++        self.val.rdy_pos = [[min_x, min_y, self.cfg.bed_max_err + 1.],
++                            [min_x, max_y, self.cfg.bed_max_err + 1.],
++                            [max_x, max_y, self.cfg.bed_max_err + 1.],
++                            [max_x, min_y, self.cfg.bed_max_err + 1.]]
++        mesh = self.obj.bed_mesh.get_mesh()
++        self.obj.bed_mesh.set_mesh(None)
++        for i in range(4):
++            self.val.rdy_pos[i][2] = self._probe_times(3, self.val.rdy_pos[i], self.cfg.g29_speed, 10, 0.2, self.cfg.min_hold, self.cfg.max_hold)
++            # if self.cfg.need_measure_gap:
++            #     self.val.gap_pos[i] = [x for x in self.val.rdy_pos[i]]
++            #     self.val.gap_pos[i][2] = self._gap_times(3, self.val.rdy_pos[i][2])
++            # else:
++            #     self.val.gap_pos[i][2] = 0
++            pass
++        if self.cfg.need_measure_gap:        
++            configfile = self.obj.printer.lookup_object('configfile')
++            configfile.set('prtouch default', 'z_gap_00', self.val.gap_pos[0][2])
++            configfile.set('prtouch default', 'z_gap_01', self.val.gap_pos[1][2])
++            configfile.set('prtouch default', 'z_gap_11', self.val.gap_pos[2][2])
++            configfile.set('prtouch default', 'z_gap_10', self.val.gap_pos[3][2])
++        self.pnt_msg("RDY_POS = [00=%.2f, 01=%.2f, 11=%.2f, 10=%.2f]" % (self.val.rdy_pos[0][2], self.val.rdy_pos[1][2], self.val.rdy_pos[2][2], self.val.rdy_pos[3][2]))
++        self.pnt_msg("GAP_POS = [00=%.2f, 01=%.2f, 11=%.2f, 10=%.2f]" % (self.val.gap_pos[0][2], self.val.gap_pos[1][2], self.val.gap_pos[2][2], self.val.gap_pos[3][2]))
++        self.obj.bed_mesh.set_mesh(mesh)
++        pass
++
++    def check_bed_mesh(self, auto_g29=True):
++        min_x, min_y = self.obj.bed_mesh.bmc.mesh_min
++        max_x, max_y = self.obj.bed_mesh.bmc.mesh_max
++        self.val.rdy_pos = [[min_x + random.uniform(2.0, +5.0), min_y + random.uniform(2.0, +5.0), self.cfg.bed_max_err + 1.],
++                            [min_x + random.uniform(2.0, +5.0), max_y - random.uniform(2.0, +5.0), self.cfg.bed_max_err + 1.],
++                            [max_x - random.uniform(2.0, +5.0), max_y - random.uniform(2.0, +5.0), self.cfg.bed_max_err + 1.],
++                            [max_x - random.uniform(2.0, +5.0), min_y + random.uniform(2.0, +5.0), self.cfg.bed_max_err + 1.]]
++        err_cnt = int(0)
++        self.val.jump_probe_ready = True
++        mesh = self.obj.bed_mesh.get_mesh()
++        if mesh is None:
++            if auto_g29:
++                self.pnt_msg("The bed_mesh data is invalid and cannot be verified.")
++                self._ck_g28ed()   
++                self.obj.gcode.run_script_from_command('BED_MESH_CALIBRATE')
++                self.obj.gcode.run_script_from_command('CXSAVE_CONFIG')
++            else:
++                #raise self.obj.printer.command_error("The bed_mesh data is invalid and cannot be verified.")
++                raise self.obj.printer.command_error("""{"code":"key504", "msg":"The bed_mesh data is invalid and cannot be verified."}""")
++            return
++
++        self.obj.bed_mesh.set_mesh(None)
++        self._ck_g28ed()        
++        self._move([self.val.home_xy[0], self.val.home_xy[1], self.cfg.bed_max_err + 1.0, self.obj.toolhead.get_position()[3]], self.cfg.g29_xy_speed)     
++        for i in range(4):
++            self.val.rdy_pos[i][2] = self._probe_times(3, self.val.rdy_pos[i], self.cfg.g29_speed, 10, self.cfg.check_bed_mesh_max_err * 2, self.cfg.min_hold, self.cfg.max_hold) + self.cfg.fix_z_offset
++            self.val.rdy_pos[i][2] += self.get_best_rdy_z(self.val.rdy_pos[i][0], self.val.rdy_pos[i][1], self.val.gap_pos) if self.cfg.need_measure_gap else 0
++            pass       
++        self.obj.bed_mesh.set_mesh(mesh)
++        errs = []
++        for i in range(4):
++            mesh_z = self.obj.bed_mesh.z_mesh.calc_z(self.val.rdy_pos[i][0], self.val.rdy_pos[i][1])
++            errs.append(abs(self.val.rdy_pos[i][2] - mesh_z))
++            err_cnt += (1 if errs[i] > self.cfg.check_bed_mesh_max_err else 0)
++            self.pnt_msg('P%d = [x=%.2f, y=%.2f, mest_z=%.2f, probe_z=%.2f, err_z=%.2f]' % (i, self.val.rdy_pos[i][0], self.val.rdy_pos[i][1], mesh_z, self.val.rdy_pos[i][2], errs[i]))        
++        if err_cnt >= 2:
++            if auto_g29:
++                self.pnt_array("check_bed_mesh: Due to the great change of the hot bed, it needs to be re-leveled. errs = ", errs, len(errs))
++                self.val.g29_cnt = 0
++                self.obj.gcode.run_script_from_command('BED_MESH_CALIBRATE')
++                self.obj.gcode.run_script_from_command('CXSAVE_CONFIG')
++            else:
++                # raise self.obj.printer.command_error("check_bed_mesh: Due to the large change of the hot bed, it can not print normally!! Errs = [%.2f, %.2f, %.2f, %.2f]" \
++                #                                         % (errs[0], errs[1], errs[2], errs[3]))
++                raise self.obj.printer.command_error("""{"code":"key501", "msg":"check_bed_mesh: Due to the large change of the hot bed, it can not print normally. Errs = [%.2f, %.2f, %.2f, %.2f]"}""" \
++                                                        % (errs[0], errs[1], errs[2], errs[3]))
++                                                        
++        else:
++            self.pnt_array("check_bed_mesh: Errs = ", errs, len(errs))
++        pass
++
++    def raise_z_bef_g28(self):
++        if self.obj.kin.limits[2][0] <= self.obj.kin.limits[2][1] and self.obj.toolhead.get_position()[2] < 5:
++            self.obj.toolhead.manual_move(self.obj.toolhead.get_position()[:2] + [5], 5)
++            self.obj.toolhead.wait_moves()
++            pass
++
++    def _cal_min_z(self, start_z, hx711_vals):
++        hx711_params, hx711_start_tick = self.obj.hx711s.get_params()
++        dirzctl_params, dirzctl_start_tick = self.obj.dirzctl.get_params()
++        if dirzctl_params is None or len(dirzctl_params) != 2:     
++            raise self.obj.printer.command_error("""{"code":"key502", "msg":"probe_by_step: Can not recv stepper-z status."}""")
++        if len(hx711_vals) < self.cfg.pi_count or len(hx711_params) < self.cfg.pi_count:
++            up_all_cnt = dirzctl_params[0]['step'] - dirzctl_params[1]['step'] + 1
++            return up_all_cnt, up_all_cnt, False
++        del hx711_params[0:(len(hx711_params) - self.cfg.pi_count)]
++
++        vals_p = [x for x in hx711_vals]
++        max_val = max(vals_p)
++        min_val = min(vals_p)
++        for i in range(len(vals_p)):
++            vals_p[i] = (vals_p[i] - min_val) / (max_val - min_val)
++        angle = math.atan((vals_p[-1] - vals_p[0]) / len(vals_p))
++        sin_angle = math.sin(-angle)
++        cos_angle = math.cos(-angle)
++        for i in range(len(vals_p)):
++            vals_p[i] = (i - 0) * sin_angle + (vals_p[i] - 0) * cos_angle + 0
++        self.val.out_index = vals_p.index(min(vals_p))
++
++        dirzctl_params[0]['tick'] = (dirzctl_params[0]['tick'] - dirzctl_start_tick) / self.obj.dirzctl.mcu_freq
++        dirzctl_params[1]['tick'] = ((4294967296 if dirzctl_params[1]['tick'] < dirzctl_start_tick else 0) + dirzctl_params[1]['tick'] - dirzctl_start_tick) / self.obj.dirzctl.mcu_freq
++        dirzctl_params[0]['z'] = start_z
++        dirzctl_params[1]['z'] = start_z - (dirzctl_params[0]['step'] - dirzctl_params[1]['step'] + 1) * (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base)
++        tick_p = ((4294967296 if hx711_params[self.val.out_index]['nt'] < hx711_start_tick else 0) + hx711_params[self.val.out_index]['nt'] - hx711_start_tick) / self.obj.hx711s.mcu_freq
++        self.val.out_val_mm = self._get_linear2([dirzctl_params[0]['tick'], 0, dirzctl_params[0]['z']], [dirzctl_params[1]['tick'], 0, dirzctl_params[1]['z']], [tick_p, 0, 0], True)[2]
++        self.pnt_msg('call_min_z, re_probe_cnt=%d, out_index=%d, out_val_mm=%.2f' % (self.val.re_probe_cnt, self.val.out_index, self.val.out_val_mm))
++        up_min_cnt = int((self.val.out_val_mm - dirzctl_params[1]['z']) / (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base))
++        up_all_cnt = dirzctl_params[0]['step'] - dirzctl_params[1]['step'] + 1
++        limt_up_cnt = int(10 / (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base))
++        up_min_cnt = up_min_cnt if up_min_cnt < limt_up_cnt else limt_up_cnt  
++        up_all_cnt = up_all_cnt if up_all_cnt < limt_up_cnt else limt_up_cnt
++        return (up_min_cnt if up_min_cnt >= 0 else 0), up_all_cnt, True
++
++    def probe_by_step(self, rdy_pos, speed_mm, min_dis_mm, min_hold, max_hold, up_after=True):
++        self.obj.hx711s.read_base(int(self.cfg.base_count / 2), max_hold)
++        step_cnt = int(min_dis_mm / (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base))
++        step_us = int(((min_dis_mm / speed_mm) * 1000 * 1000) / step_cnt)
++        self.obj.hx711s.query_start(self.cfg.pi_count * 2, int(65535), del_dirty=True, show_msg=False, is_ck_con=True)        
++        self.obj.dirzctl.check_and_run(0, int(step_us), int(step_cnt), wait_finish=False, is_ck_con=True)
++        self.obj.hx711s.delay_s(0.015)
++        self.pnt_msg('*********************************************************')
++        self.pnt_msg('PROBE_BY_STEP x=%.2f y=%.2f z=%.2f speed_mm=%.2f step_us=%d step_cnt=%d' % (rdy_pos[0], rdy_pos[1], rdy_pos[2], speed_mm, step_us, step_cnt))
++        while self.ck_sys_sta():
++            self.obj.hx711s.send_heart_beat()
++            self.obj.dirzctl.send_heart_beat()
++            all_valss = self.obj.hx711s.get_vals()
++            if all_valss is None or len(all_valss[0]) == 0:
++                self.obj.hx711s.delay_s(0.005)
++                continue
++            unfit_vals, tmp_unfit_vals = self.obj.filter.cal_offset_by_vals(self.obj.hx711s.s_count, all_valss, self.obj.filter.lft_k1_oft, self.cfg.pi_count)
++            fit_vals, tmp_fit_vals = self.obj.filter.cal_filter_by_vals(self.obj.hx711s.s_count, all_valss, self.obj.filter.hft_hz, self.obj.filter.lft_k1, self.cfg.pi_count)
++            
++            for i in range(self.obj.hx711s.s_count):
++                if not self._check_trigger(i, tmp_fit_vals[i], tmp_unfit_vals[i], min_hold, max_hold):
++                    continue
++                self.obj.dirzctl.check_and_run(0, 0, 0, wait_finish=False)
++                self.obj.hx711s.query_start(self.cfg.pi_count * 2, int(0), del_dirty=False, show_msg=False)
++                self.obj.hx711s.delay_s(0.015)
++                for j in range(int(self.obj.hx711s.s_count)):
++                    self.pnt_array('TRIGGER_USE_CH=%d, FIT_VALS=' % (j), tmp_fit_vals[j], 16)
++                self.obj.hx711s.delay_s(0.2)
++                all_valss = self.obj.hx711s.get_vals()
++                self.pnt_array('WAIT_AND_CAL_CH=%d, ARY=' % (i), all_valss[i])
++                hx711_vals, tmp_hx711_vs = self.obj.filter.cal_filter_by_vals(self.obj.hx711s.s_count, all_valss, self.obj.filter.hft_hz, self.obj.filter.lft_k1_cal, self.cfg.pi_count)
++                self.pnt_array('WAIT_AND_CAL_CH=%d, ARY=' % (i), tmp_hx711_vs[i])
++                for m in range(self.obj.hx711s.s_count):
++                    self.send_wave_tri(m, tmp_hx711_vs[m])
++                up_min_cnt, up_all_cnt, deal_sta = self._cal_min_z(rdy_pos[2], tmp_hx711_vs[i])
++                if up_after:
++                    self.obj.dirzctl.check_and_run(1, int(step_us / 2), int(up_all_cnt))
++                return self.val.out_index, self.val.out_val_mm, deal_sta
++            self.obj.hx711s.delay_s(0.005)
++        return self.val.out_index, self.val.out_val_mm, True
++
++    def run_G28_Z(self):
++        self.pnt_msg('***run_G28_Z*** Start...')
++        self.val.re_probe_cnt = 0
++        self.val.g29_cnt = 0
++        self.obj.toolhead.wait_moves()
++        target_temp = self.obj.heater_hot.target_temp
++        now_pos = self.obj.toolhead.get_position()
++        self.val.home_xy = [now_pos[0], now_pos[1]]
++        now_pos[2] = 2
++        random.seed(int(time.time()))  
++        now_pos_sta0 = [now_pos[0] + (1 if (int(time.time() * 1000) % 2 == 0) else -1) * random.uniform(10, 20),
++                        now_pos[1] + (1 if (int(time.time() * 100) % 2 == 0) else -1) * random.uniform(10, 20),
++                        now_pos[2], now_pos[3]]
++        mesh = self.obj.bed_mesh.get_mesh()
++        self.obj.bed_mesh.set_mesh(None)                
++        self.obj.toolhead.set_position(now_pos, homing_axes=[2])
++        self._move(now_pos_sta0, 20)
++        if self.cfg.g28_wait_cool_down and self.obj.heater_hot.smoothed_temp > (self.cfg.hot_min_temp + 5):
++            self.pnt_msg('G28_Z: Wait for Nozzle to cool down[%.2f -> %.2f]...' % (target_temp, self.cfg.hot_min_temp))
++            self._set_hot_temps(temp=self.cfg.hot_min_temp, fan_spd=255, wait=True, err=5) 
++            self._set_hot_temps(temp=self.cfg.hot_min_temp, fan_spd=0, wait=False, err=5) 
++        if self.cfg.max_dis_bef_g28 != 0:
++            step_cnt = int(self.cfg.max_dis_bef_g28 / (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base))
++            step_us = int(((self.cfg.max_dis_bef_g28 / self.cfg.g28_sta0_speed) * 1000 * 1000) / step_cnt)
++            self.obj.dirzctl.check_and_run(1, step_us, step_cnt)
++        if self.cfg.dead_zone_bef_g28 != 0:
++            step_cnt = int(self.cfg.dead_zone_bef_g28 / (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base))
++            step_us = int(((self.cfg.dead_zone_bef_g28 / self.cfg.g28_sta0_speed) * 1000 * 1000) / step_cnt)
++            self.obj.dirzctl.check_and_run(0, step_us, step_cnt)
++        is_uped = False
++        for i in range(10):
++            self.obj.toolhead.set_position(now_pos_sta0[:2] + [(2 if i == 0 else 0), now_pos_sta0[3]], homing_axes=[2])
++            self._move(now_pos_sta0[:3], self.cfg.g29_rdy_speed)
++            out_index, out_mm, deal_sta = self.probe_by_step(now_pos_sta0, self.cfg.g28_sta0_speed, self.cfg.max_z, self.cfg.g28_sta0_min_hold, self.cfg.max_hold, up_after=False)
++            if not deal_sta and not is_uped:
++                is_uped = True
++                self.obj.toolhead.set_position(now_pos_sta0[:2] + [0, now_pos_sta0[3]], homing_axes=[2])
++                self._move(now_pos_sta0[:2] + [5, now_pos_sta0[3]], self.cfg.g29_rdy_speed)
++                pass
++            if (-1 < out_mm < 1 and deal_sta) or not self.ck_sys_sta():
++                break
++        self.obj.toolhead.set_position(now_pos_sta0[:2] + [-0.5, now_pos[3]], homing_axes=[2])
++        self._move(now_pos_sta0[:2] + [2, now_pos[3]], self.cfg.g29_rdy_speed)
++
++        now_pos = [now_pos[0] + random.uniform(-1.0, +1.0), now_pos[1] + random.uniform(-1.0, +1.0), 2, now_pos[3]]
++        self._move(now_pos, 30)
++        self.shake_motor(int(self.cfg.shake_cnt * 2))
++        out_mms = []
++        for i in range(5):
++            o_index0, o_mm0, deal_sta = self.probe_by_step(now_pos, self.cfg.g28_sta1_speed, self.cfg.max_z, self.cfg.min_hold, self.cfg.max_hold, True)
++            out_mms.append(o_mm0)
++        out_mms.sort()
++        self.pnt_array('G28_ZS = ', out_mms, len(out_mms))
++        if math.fabs(out_mms[2]) > 1.0:
++             raise self.obj.printer.command_error("""{"code":"key504", "msg":"run_G28_Z: Homing Z failure, During zeroing, please place the machine on a stable platform and do not touch the hot bed."}""")
++        self.obj.toolhead.set_position(now_pos[:2] + [now_pos[2] - out_mms[2] - self.cfg.self_z_offset, now_pos[3]], homing_axes=[2])
++
++        self.obj.bed_mesh.set_mesh(mesh)
++
++        # self.obj.gcode.run_script_from_command('G1 F300 Z10')
++        self._move(now_pos[:2] + [10, now_pos[3]], self.cfg.g29_rdy_speed)
++
++        if self.cfg.g28_wait_cool_down:
++            self.pnt_msg('G28_Z: Wait for Nozzle to recovery[%.2f -> %.2f]...' % (self.cfg.hot_min_temp, target_temp))
++            self._set_hot_temps(temp=target_temp, fan_spd=0, wait=True if target_temp > self.cfg.hot_min_temp else False, err=5)
++        pass
++
++    def run_G29_Z(self):
++        x_cnt = self.obj.bed_mesh.bmc.mesh_config['x_count']
++        y_cnt = self.obj.bed_mesh.bmc.mesh_config['y_count']
++        self.obj.toolhead.wait_moves()
++        now_pos = self.obj.toolhead.get_position()
++        self.val.jump_probe_ready = False
++
++        if self.val.g29_cnt == 0:
++            self.shake_motor(self.cfg.shake_cnt)
++            self.probe_ready()
++            now_pos[2] = self.get_best_rdy_z(now_pos[0], now_pos[1], self.val.rdy_pos) + self.cfg.best_above_z
++            self._move(now_pos, self.cfg.g29_xy_speed)        
++
++        if (int(self.val.g29_cnt) % int(x_cnt)) == 0:
++            self.shake_motor(self.cfg.shake_cnt)
++            pass
++
++        now_pos[2] = self._probe_times(10, now_pos, self.cfg.g29_speed, self.cfg.bed_max_err, 0.06, self.cfg.min_hold, self.cfg.max_hold) + self.get_best_rdy_z(now_pos[0], now_pos[1], self.val.gap_pos) + self.cfg.fix_z_offset
++       
++        self.val.g29_cnt += 1
++        if self.val.g29_cnt == x_cnt * y_cnt:
++            self.val.g29_cnt = 0
++            self._move([now_pos[0], now_pos[1], self.cfg.bed_max_err + 1], self.cfg.g29_rdy_speed) 
++            self._move([self.val.home_xy[0], self.val.home_xy[1], self.cfg.bed_max_err + 1], self.cfg.g29_xy_speed)  
++            home_z = self._probe_times(3, [self.val.home_xy[0], self.val.home_xy[1], self.cfg.bed_max_err + 1], 
++                                       self.cfg.g29_speed, self.cfg.bed_max_err * 2, 0.20, self.cfg.min_hold, self.cfg.max_hold)
++            self.pnt_msg('CHECK_STEP_LOST need=0, tri=%.2f' % home_z)
++            if home_z > 1.0:
++                raise self.obj.printer.command_error("""{"code":"key503", "msg":"run_G29_Z: Z-axis motor lost of step detected, Please restart the machine and try again"}""")
++
++        return now_pos
++
++    cmd_PRTOUCH_TEST_help = "Test the PR-Touch."
++    def cmd_PRTOUCH_TEST(self, gcmd):   # PRTOUCH_TEST X=20 Y=20 Z=-4 S=0.0125
++        pos = self.obj.toolhead.get_position()
++        rdy_x = gcmd.get_float('X', pos[0])
++        rdy_y = gcmd.get_float('Y', pos[1])
++        rdy_z = gcmd.get_float('Z', pos[2])
++        speed = gcmd.get_float('SPEED', 1.0)
++        min_hold = gcmd.get_int('MIN_HOLD', self.cfg.min_hold)
++        max_hold = gcmd.get_int('MAX_HOLD', self.cfg.max_hold)
++        self._move([rdy_x, rdy_y, rdy_z], self.cfg.g29_xy_speed)
++        self.probe_by_step([rdy_x, rdy_y, rdy_z], speed, 50, min_hold, max_hold, True)
++        pass
++
++    cmd_PRTOUCH_READY_help = "Test the ready point."
++    def cmd_PRTOUCH_READY(self, gcmd):
++        self.probe_ready()
++        pass
++
++    cmd_CHECK_BED_MESH_help = "Check the bed mesh."
++    def cmd_CHECK_BED_MESH(self, gcmd):
++        self.check_bed_mesh(gcmd.get_int('AUTO_G29', 0) > 0)
++        pass
++
++    cmd_MEASURE_GAP_TEST_help = "Measure z gap."
++    def cmd_MEASURE_GAP_TEST(self, gcmd):
++        self._ck_g28ed()
++        gap_index = gcmd.get_int('INDEX', 0)
++        n_index = [0, 3, 1, 2]
++        self._move([self.val.rdy_pos[n_index[gap_index]][0], self.val.rdy_pos[n_index[gap_index]][1], self.cfg.bed_max_err + 1.], self.cfg.g29_xy_speed)  
++        zero_z = self._probe_times(10, [self.val.rdy_pos[n_index[gap_index]][0], self.val.rdy_pos[n_index[gap_index]][1], self.cfg.bed_max_err + 1.], 
++                                        self.cfg.g29_speed, 10, 0.05, self.cfg.min_hold, self.cfg.max_hold) 
++        self._gap_times(5, zero_z)
++        pass
++
++    cmd_NOZZLE_CLEAR_help = "Clear the nozzle on bed."
++    def cmd_NOZZLE_CLEAR(self, gcmd):
++        hot_min_temp = gcmd.get_float('HOT_MIN_TEMP', self.cfg.hot_min_temp)
++        hot_max_temp = gcmd.get_float('HOT_MAX_TEMP', self.cfg.hot_max_temp)
++        bed_max_temp = gcmd.get_float('BED_MAX_TEMP', self.cfg.bed_max_temp)
++        min_hold = gcmd.get_int('MIN_HOLD', self.cfg.min_hold)
++        max_hold = gcmd.get_int('MAX_HOLD', self.cfg.max_hold)
++        self.clear_nozzle(hot_min_temp, hot_max_temp, bed_max_temp, min_hold, max_hold)
++
++    def change_hot_min_temp(self, temp):
++        self.cfg.hot_min_temp = temp
++
++def load_config(config):
++    prt = PRTouchEndstopWrapper(config)
++    config.get_printer().add_object('probe', probe.PrinterProbe(config, prt))
++    return prt
++
++# G28
++# READ_HX711 C=1
++# NOZZLE_CLEAR
++# PRTOUCH_READY
++# BED_MESH_CALIBRATE
++# CHECK_BED_MESH AUTO_G29=0
++# MEASURE_GAP_TEST INDEX=0
++# FORCE_MOVE STEPPER=stepper_x DISTANCE=10 VELOCITY=5
++
++# g28_sta0_speed、g28_sta1_speed,g29_speed=1.8
+diff --git a/src/dirzctl.c b/src/dirzctl.c
+new file mode 100755
+index 000000000..3692240c1
+--- /dev/null
++++ b/src/dirzctl.c
+@@ -0,0 +1,199 @@
++#include "basecmd.h"        // oid_alloc
++#include "board/gpio.h"     // struct gpio_in
++#include "board/irq.h"      // irq_disable
++#include "board/misc.h"     // timer_from_us
++#include "board/internal.h" // gpio_peripheral
++#include "command.h"        // DECL_COMMAND
++#include "sched.h"          // struct timer
++#include <stdio.h>
++#include <string.h>
++
++#define TICKS_LEN 32
++
++struct dirzctl
++{
++    struct timer time;
++
++    uint32_t oid;
++    uint32_t count;
++    int32_t dir_inverts[4];
++    int32_t step_invrets[4];
++    struct gpio_out dirs[4];
++    struct gpio_out steps[4];
++    struct gpio_in in_dirs[4];
++
++    uint32_t r_steps;
++    uint32_t r_steps_fix;
++    uint32_t n_ticks;
++    uint32_t o_dirs[4];
++
++    uint32_t r_stop;
++
++    uint32_t a_finish;
++    uint32_t a_steps;
++    uint32_t a_ticks;
++};
++
++struct task_wake dirzctl_wake;
++
++//struct dirzctl *d = NULL;
++void 
++command_config_dirzctl(uint32_t *args);
++
++static void 
++deal_dirs(struct dirzctl *d, int32_t dir, int32_t is_save)
++{
++    if (is_save > 0)
++    {
++        for (int32_t i = 0; i < d->count; i++)
++        {
++            d->o_dirs[i] = gpio_in_read(d->in_dirs[i]);
++            gpio_out_write(d->dirs[i], (dir != d->dir_inverts[i]));
++        }
++    }
++    else
++    {
++        for (int32_t i = 0; i < d->count; i++)
++            gpio_out_write(d->dirs[i], d->o_dirs[i]);
++    }
++}
++
++static void 
++deal_steps(struct dirzctl *d)
++{
++	for (int i = 0; i < d->count; i++)
++        gpio_out_toggle_noirq(d->steps[i]);
++}
++
++static void 
++send_status(struct dirzctl *d)
++{
++    d->a_ticks = timer_read_time();
++    d->a_steps = (d->r_steps - (d->r_steps % 2)) / 2;
++    d->a_finish = 1;
++}
++
++static uint_fast8_t 
++dirzctl_event(struct timer *t)
++{
++	struct dirzctl *d = container_of(t,struct dirzctl,time);
++
++    sched_wake_task(&dirzctl_wake);
++	deal_steps(d);
++    d->r_steps--;
++    if((d->r_steps == 0) || ((d->r_steps % 2 == 0) && (d->r_stop == 1)))
++    {
++        sched_del_timer(&d->time);
++        send_status(d);
++        deal_dirs(d,0, 0);
++        d->r_stop = 0;
++        return SF_DONE;        
++    }else if(d->r_steps == d->r_steps_fix - 1)
++        send_status(d);
++    d->time.waketime = timer_read_time() + d->n_ticks;
++    return SF_RESCHEDULE;
++}
++
++void 
++command_config_dirzctl(uint32_t *args)
++{
++    sendf("debug_dirzctl oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u arg[4]=%u arg[5]=%u", 
++        (uint8_t)args[0], (uint32_t)args[0], (uint32_t)args[1], (uint32_t)args[2], (uint32_t)args[3], (uint32_t)args[4], (uint32_t)args[5]);
++    struct dirzctl* d = oid_alloc(args[0], command_config_dirzctl, sizeof(*d));
++    d->oid = args[0];
++    d->count = args[1];
++    d->a_finish = 0;
++    d->r_stop = 0;
++    if (d->count > 4)
++        shutdown("Max of 4 Z AXIS");
++    d->time.func = dirzctl_event;
++}
++DECL_COMMAND(command_config_dirzctl, "config_dirzctl oid=%c z_count=%c");
++
++void 
++command_add_dirzctl(uint32_t *args)
++{
++    uint8_t index = args[1];
++	uint8_t oid = args[0];
++	struct dirzctl* d = oid_lookup(oid,command_config_dirzctl);
++
++    sendf("debug_dirzctl oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u arg[4]=%u arg[5]=%u", 
++        (uint8_t)args[0], (uint32_t)args[0], (uint32_t)args[1], (uint32_t)args[2], (uint32_t)args[3], (uint32_t)args[4], (uint32_t)args[5]);
++    if (index >= 4)
++        shutdown("Set direct z ctl maximum count");
++    d->dir_inverts[index] = args[4];
++    d->step_invrets[index] = args[5];
++    d->in_dirs[index] = gpio_in_setup(args[2], 0);
++    d->dirs[index] = gpio_out_setup(args[2], 0);
++    d->steps[index] = gpio_out_setup(args[3], args[5]);
++}
++DECL_COMMAND(command_add_dirzctl, "add_dirzctl oid=%c index=%c dir_pin=%u step_pin=%u dir_invert=%c step_invert=%c");
++
++void 
++command_run_dirzctl(uint32_t *args)
++{
++    //sendf("debug_dirzctl oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u arg[4]=%u arg[5]=%u", 
++    //   (uint8_t)args[0], (uint32_t)args[0], (uint32_t)args[1], (uint32_t)args[2], (uint32_t)args[3], (uint32_t)args[4], (uint32_t)args[5]);
++	uint8_t oid = args[0];
++	struct dirzctl* d = oid_lookup(oid,command_config_dirzctl);
++    
++	if(args[3] == 0)
++    {
++        d->r_stop = 1;
++        return;
++    }    
++    d->r_stop = 0;
++    deal_dirs(d,args[1], 1);    
++    d->n_ticks = (uint32_t)(((double)args[2] / 1000000) * CONFIG_CLOCK_FREQ) / 2; 
++    d->r_steps = args[3] * 2;
++    d->r_steps_fix = d->r_steps;
++    d->time.waketime = timer_read_time() + d->n_ticks;
++    sched_add_timer(&d->time);
++}
++DECL_COMMAND(command_run_dirzctl, "run_dirzctl oid=%c direct=%c step_us=%u step_cnt=%u");
++
++void 
++dirzctl_task(void)
++{
++	uint8_t oid;
++
++	struct dirzctl* d;
++
++	if(!sched_check_wake(&dirzctl_wake))
++	{
++		return;
++	}
++	
++	foreach_oid(oid,d,command_config_dirzctl)
++	{
++
++		if(d->a_finish == 0)
++		{
++			return;
++		}
++
++		sendf("result_dirzctl oid=%c step=%u tick=%u", (uint8_t)d->oid, (uint16_t)d->a_steps, (uint32_t)d->a_ticks);
++		
++		d->a_finish = 0;
++	}
++	return;
++}
++DECL_TASK(dirzctl_task);
++
++void 
++dirzctl_shutdown(void)
++{
++	uint8_t oid;
++
++	struct dirzctl* d;
++
++	foreach_oid(oid,d,command_config_dirzctl)
++	{
++		d->a_finish = 0;
++	}
++
++	return;
++}
++
++DECL_SHUTDOWN(dirzctl_shutdown);
++
+diff --git a/src/hx711s.c b/src/hx711s.c
+new file mode 100755
+index 000000000..ea64dd298
+--- /dev/null
++++ b/src/hx711s.c
+@@ -0,0 +1,188 @@
++#include "basecmd.h"        // oid_alloc
++#include "board/gpio.h"     // struct gpio_in
++#include "board/irq.h"      // irq_disable
++#include "board/misc.h"     // timer_from_us
++#include "board/internal.h" // gpio_peripheral
++#include "command.h"        // DECL_COMMAND
++#include "sched.h"          // struct timer
++#include <stdio.h>
++#include <string.h>
++
++#define HX711S_SAMPLE_PERIOD_TICKS			(CONFIG_CLOCK_FREQ / 10000 * 125)
++#define HX711S_SAMPLE_REST_TICKS			(HX711S_SAMPLE_PERIOD_TICKS / 2)
++
++struct hx711s
++{
++	struct timer hx711s_timer;
++    uint32_t oid; 
++ 	uint32_t rest_ticks;
++	uint8_t flags;	
++    uint32_t hx711_count;
++    int32_t  times_read;
++    struct gpio_out clks[4];
++    struct gpio_in sdos[4];
++};
++
++struct task_wake hx711s_wake;
++
++enum {HX711S_SAMPLE_START = 1 << 0};
++
++static uint_fast8_t
++hx711s_sample_event(struct timer* t)
++{
++	sched_wake_task(&hx711s_wake);
++
++	struct hx711s* h = container_of(t,struct hx711s,hx711s_timer);
++
++	h->hx711s_timer.waketime += h->rest_ticks;
++
++	if(h->flags & HX711S_SAMPLE_START)
++	{
++		return SF_RESCHEDULE;
++	}
++
++	return SF_DONE;
++}
++
++
++void 
++command_config_hx711s(uint32_t *args)
++{
++    struct hx711s* h = oid_alloc(args[0], command_config_hx711s, sizeof(*h));
++    h->oid = args[0];
++    h->hx711_count = args[1];
++    if (h->hx711_count > 4)
++        shutdown("Max of 4 hx711");
++	h->flags = 0;
++	h->rest_ticks = HX711S_SAMPLE_REST_TICKS;
++	h->hx711s_timer.func = hx711s_sample_event;
++    sendf("debug_hx711s oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u", (int)args[0], (int)args[0], (int)args[1], 0, 0);
++}
++DECL_COMMAND(command_config_hx711s, "config_hx711s oid=%c hx711_count=%c");
++
++static int32_t 
++get_hx711s(struct hx711s* h)
++{
++    static uint64_t last_tick = 0;    
++    int32_t outVals[4] = {0, 0, 0, 0}, is_data_valid = 0;
++
++    for (int j = 0; j < h->hx711_count; j++)
++        is_data_valid |= (gpio_in_read(h->sdos[j]) << j);
++
++    uint64_t now_tick = timer_read_time();
++    now_tick += (now_tick < last_tick ? 0xFFFFFFFF : 0);
++    uint64_t now_inter_ms = (now_tick - last_tick) * 1000.0f / CONFIG_CLOCK_FREQ;
++
++    //if (is_data_valid == 0 || now_inter_ms >= 25)
++    if (is_data_valid == 0)
++    {
++        for (int j = 0; j < h->hx711_count; j++)
++            gpio_out_write(h->clks[j], 0);
++
++        for (int i = 0; i < 24; i++)
++        {
++            for (int j = 0; j < h->hx711_count; j++)
++                gpio_out_write(h->clks[j], 1);
++            for (int j = 0; j < h->hx711_count; j++)
++                outVals[j] = outVals[j] << 1;
++            for (int j = 0; j < h->hx711_count; j++)
++                gpio_out_write(h->clks[j], 0);
++            for (int j = 0; j < h->hx711_count; j++)
++                outVals[j] += (gpio_in_read(h->sdos[j]) > 0 ? 1 : 0);
++        }
++        for (int j = 0; j < h->hx711_count; j++)
++            gpio_out_write(h->clks[j], 1);
++        for (int j = 0; j < h->hx711_count; j++)
++        {
++            outVals[j] |= ((outVals[j] & 0x00800000) != 0 ? 0xFF000000 : 0);
++        }
++        for (int j = 0; j < h->hx711_count; j++)
++            gpio_out_write(h->clks[j], 0);
++
++        last_tick = timer_read_time();
++        sendf("result_hx711s oid=%c vd=%c it=%c tr=%hu nt=%u v0=%i v1=%i v2=%i v3=%i", 
++                             (uint8_t)h->oid, (uint8_t)is_data_valid, (uint8_t)now_inter_ms, (uint16_t)h->times_read, (uint32_t)now_tick,  (int32_t)outVals[0], (int32_t)outVals[1], (int32_t)outVals[2], (int32_t)outVals[3]);
++        return 1;  
++    }
++    return 0;
++}
++
++
++void 
++command_add_hx711s(uint32_t *args)
++{
++	uint8_t oid = args[0];
++    uint8_t index = args[1];
++	struct hx711s* h = oid_lookup(oid,command_config_hx711s);	
++    if (index >= h->hx711_count)
++        shutdown("Set hx711 past maximum count");
++
++    h->clks[index] = gpio_out_setup(args[2], 0);
++    h->sdos[index] = gpio_in_setup(args[3], 0);
++
++    sendf("debug_hx711s oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u", (int)args[0], (int)args[0], (int)args[1], (int)args[2], (int)args[3]);
++}
++DECL_COMMAND(command_add_hx711s, "add_hx711s oid=%c index=%c clk_pin=%u sdo_pin=%u");
++
++void 
++command_query_hx711s(uint32_t *args)
++{
++	uint8_t oid = args[0];
++	struct hx711s* h = oid_lookup(oid,command_config_hx711s);	
++	h->times_read = args[1];
++	h->flags |= HX711S_SAMPLE_START;
++	sched_del_timer(&h->hx711s_timer);
++	irq_disable();
++	h->hx711s_timer.waketime = timer_read_time() + h->rest_ticks;
++	sched_add_timer(&h->hx711s_timer);
++	irq_enable();
++}
++DECL_COMMAND(command_query_hx711s, "query_hx711s oid=%c times_read=%hu");
++
++
++void 
++hx711s_task(void)
++{
++	uint8_t oid;
++	struct hx711s* h;
++
++	if(!sched_check_wake(&hx711s_wake))
++	{
++		return;
++	}
++
++	foreach_oid(oid,h,command_config_hx711s)
++	{
++    	if (!(h->flags & HX711S_SAMPLE_START) || h->times_read <= 0)
++        {
++			return;
++		}		
++
++    	if(get_hx711s(h) > 0)
++		{
++        	h->times_read--;
++			if(h->times_read == 0)
++			{
++				h->flags &= ~HX711S_SAMPLE_START;
++				//sched_del_timer(&h->hx711s_timer);	
++			}
++		}
++	}
++}
++DECL_TASK(hx711s_task);
++
++void 
++hx711s_shutdown(void)
++{
++	uint8_t oid;
++	struct hx711s* h;
++	foreach_oid(oid,h,command_config_hx711s)
++	{
++		h->times_read = 0;
++		h->flags &= ~HX711S_SAMPLE_START;
++	}
++	return;	
++}
++
++DECL_SHUTDOWN(hx711s_shutdown);
++
+-- 
+2.39.5 (Apple Git-154)
+

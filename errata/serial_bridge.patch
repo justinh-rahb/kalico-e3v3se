@@ -1,0 +1,2092 @@
+From 6469418d73be6743a7130b50fdb5a57d311435ca Mon Sep 17 00:00:00 2001
+From: E4ST2W3ST <E4ST2W3ST@users.noreply.github.com>
+Date: Sun, 31 Dec 2023 16:50:16 -0600
+Subject: [PATCH] serial_bridge: Add serial bridge module
+
+Add functionality that allows communicating and configuring
+uart ports on the target MCU. Currently supports the STM32
+architecture.
+
+Signed-off-by: Jeremy Putnam <e4st2west@gmail.com>
+---
+ config/printer-elegoo-neptune3-pro-2023.cfg |   20 +
+ docs/Config_Reference.md                    |   49 +
+ docs/G-Codes.md                             |   19 +
+ klippy/extras/neptune_screen.py             | 1171 +++++++++++++++++++
+ klippy/extras/serial_bridge.py              |  186 +++
+ src/Makefile                                |    1 +
+ src/generic/serial_bridge_irq.c             |  119 ++
+ src/generic/serial_bridge_irq.h             |   24 +
+ src/serial_bridge.c                         |   86 ++
+ src/stm32/Kconfig                           |   14 +
+ src/stm32/Makefile                          |    2 +
+ src/stm32/serial_bridge.c                   |  238 ++++
+ src/stm32/serial_bridge.h                   |    6 +
+ 13 files changed, 1935 insertions(+)
+ create mode 100644 klippy/extras/neptune_screen.py
+ create mode 100644 klippy/extras/serial_bridge.py
+ create mode 100644 src/generic/serial_bridge_irq.c
+ create mode 100644 src/generic/serial_bridge_irq.h
+ create mode 100644 src/serial_bridge.c
+ create mode 100644 src/stm32/serial_bridge.c
+ create mode 100644 src/stm32/serial_bridge.h
+
+diff --git a/config/printer-elegoo-neptune3-pro-2023.cfg b/config/printer-elegoo-neptune3-pro-2023.cfg
+index c736544b57c6..ef9d9948f3eb 100644
+--- a/config/printer-elegoo-neptune3-pro-2023.cfg
++++ b/config/printer-elegoo-neptune3-pro-2023.cfg
+@@ -2,11 +2,17 @@
+ # To use this config, during "make menuconfig" select the  STM32F401 with a
+ # "32KiB bootloader" and serial (on USART1 PA10/PA9) communication.
+ 
++# For screen support, enable "Enable extra low-level configuration options"
++# and select "Enable serial bridge" and then "USART6" then uncommit the [neptune_screen]
++# and serial_bridge sections
++
++
+ # Note that the "make flash" command does not work with ZNP Robin boards.
+ # After running "make", rename the out/klipper.bin file to out/ZNP_ROBIN_NANO.bin
+ # Copy the file out/ZNP_ROBIN_NANO.bin to an SD card formatted to FAT32
+ # and then restart the printer with the SD card inserted.
+ 
++
+ # See docs/Config_Reference.md for a description of parameters.
+ 
+ # Core
+@@ -22,6 +28,20 @@ max_accel: 3000
+ max_z_velocity: 5
+ max_z_accel: 100
+ 
++# Screen
++
++#[serial_bridge UART6]
++#rx_pin: PA12
++#tx_pin: PA11
++#baud: 115200
++#config: 4
++#eol:\xff\xff\xff
++
++#[neptune_screen]
++#serial_bridge: UART6
++#variant: 3Pro
++
++
+ # Steppers
+ 
+ [stepper_x]
+diff --git a/docs/Config_Reference.md b/docs/Config_Reference.md
+index 4b53ef264e44..b8fb7075c6fc 100644
+--- a/docs/Config_Reference.md
++++ b/docs/Config_Reference.md
+@@ -4301,6 +4301,24 @@ information on menu attributes available during template rendering.
+ #   mode start or end.
+ ```
+ 
++### [neptune screen]
++Support for the Elegoo screen for the Neptune 3/3 Plus/3 Max.
++A [serial bridge](#serial_bridge) must be setup for communciation to
++take place. Communication is based on versions (1.4.2) and earlier.
++
++```
++[neptune_screen]
++#serial_bridge:
++#   Name of the serial_bridge to be used for communication
++#variant:
++#   The device variant to report to the screen. Possible values are
++#   3Pro: Neptune 3 Pro
++#   3Max: Neptune 3 Max
++#   3Plus: Neptune 3 Plus
++#   The default value is 3Pro
++#logging:
++#   Boolean used to enable/disable verbose logging. Default is False.
++```
+ ## Filament sensors
+ 
+ ### [filament_switch_sensor]
+@@ -4735,3 +4753,34 @@ via the `i2c_speed` parameter. All other Klipper micro-controllers use a
+ #   to 100000 and changing this value has no effect. The default is
+ #   100000. Linux, RP2040 and ATmega support 400000.
+ ```
++
++### [serial_bridge]
++Communication between the mcu and devices connected to its UART ports
++such as third-party screens can be bridged with this module. This feature
++must be enabled with the low-level configuration options when compiling the
++firmware specifying which ports should be available for the bridge to use.
++Currently only STM32 devices are supported.
++
++See the [command reference](G-Codes.md#serial_bridge) for the different
++options and configurations available.
++
++```
++[serial_bridge bridge_screen]
++#eol:
++#   The character or string of characters to be sent at the end of each
++#   call. Defaults to \n
++#baud
++#   The baud rate for communication. Default is 115200
++#config:
++#   The serial configuration to use. These define the port and pins.
++#   List them  using the [command reference](G-Codes.md#serial_bridge)
++#   SERIAL_BRIDGE_LIST_CONFIGS
++#tx_pin:
++#   Pin used for Tx. This is used to reserve the pin and to look up
++#   the appropriate MCU
++#rx_pin
++#   Pin used for Rx. This is used to reserve the pin and to look up
++#   the appropriate MCU
++#logging
++#   Boolean to turn logging of or on for debugging communication
++```
+diff --git a/docs/G-Codes.md b/docs/G-Codes.md
+index 8c70609f18c9..c99672557bcb 100644
+--- a/docs/G-Codes.md
++++ b/docs/G-Codes.md
+@@ -1099,6 +1099,25 @@ loaded into the `printer.save_variables.variables` dict at startup and
+ can be used in gcode macros. The provided VALUE is parsed as a Python
+ literal.
+ 
++### [serial_bridge]
++The following command is enabled if a
++[serial_bridge config section](Config_Reference.md#serial_bridge)
++has been enabled.
++
++#### SERIAL_BRIDGE_SEND
++`SERIAL_BRIDGE_SEND [TEXT=<value>] [BRIDGE=<value>]`: This command will
++send a serial message (TEXT) to the bridge specificed (BRIDGE).
++
++#### SERIAL_BRIDGE_LIST_CONFIGS
++`SERIAL_BRIDGE_LIST_CONFIGS`: This command will list the available
++configurations reported by the MCU for use. This config should be used
++when setting up a new [serial_bridge](Config_Reference.md#serial_bridge).
++
++#### SERIAL_BRIDGE_LIST_BRIDGES
++`SERIAL_BRIDGE_LIST_BRIDGES`: This command will list the available
++bridges ready for use from the printer configuration
++[serial_bridge](Config_Reference.md#serial_bridge).
++
+ ### [screws_tilt_adjust]
+ 
+ The following commands are available when the
+diff --git a/klippy/extras/neptune_screen.py b/klippy/extras/neptune_screen.py
+new file mode 100644
+index 000000000000..ba68c8e077be
+--- /dev/null
++++ b/klippy/extras/neptune_screen.py
+@@ -0,0 +1,1171 @@
++import logging
++import time
++from abc import ABCMeta, abstractmethod
++
++SERIAL_STATE_HEADER_NONE = 0
++SERIAL_STATE_HEADER_ONE = 1
++SERIAL_STATE_HEADER_TWO = 2
++SERIAL_STATE_HEADER_MESSAGE = 3
++
++SERIAL_HEADER_BYTE_1 = 0x5a
++SERIAL_HEADER_BYTE_2 = 0xa5
++
++DGUS_CMD_WRITEVAR = 0x82
++DGUS_CMD_READVAR = 0x83
++
++class NeptuneScreen:
++    def __init__(self, config):
++        self._serial_state = None
++        self._serial_state = SERIAL_STATE_HEADER_NONE
++        self._axis_unit = 1
++        self._temp_and_rate_unit = 1
++        self._filament_load_length = 50
++        self._filament_load_feedrate = 150
++        self._acceleration_unit = 100
++        self._speed_ctrl = 'feedrate'
++        self._temp_ctrl = 'extruder'
++        self._last_message = None
++        self._print_state = None
++        self._zoffset_unit = 0.1
++        self._gcode_callbacks = {}
++        self._file_list = []
++        self._requested_file = None
++        self._file_page_number = 0
++        self._file_per_page = 8
++        self._version = 100
++        self.printer = config.get_printer()
++        self.config = config
++        self.mutex = self.printer.get_reactor().mutex()
++        self.name = config.get_name()
++        self.reactor = self.printer.get_reactor()
++        self._logging = config.getboolean("logging", False)
++        self.heaters = []
++        self.leds = []
++        self._last_gcode_output = ""
++
++
++        self.printer.register_event_handler("klippy:ready", self.handle_ready)
++        self.gcode = self.printer.lookup_object('gcode')
++        self.gcode.register_output_handler(self.gcode_output_handler)
++
++        bridge = config.get('serial_bridge')
++
++        self.variant = config.get('variant', '3Pro')
++
++        self.serial_bridge = self.printer.lookup_object(
++            'serial_bridge %s' %(bridge))
++        self.serial_bridge.register_callback(
++            self._handle_serial_bridge_response)
++
++        self._update_interval = 2
++        self._update_timer = self.reactor.register_timer(self._screen_update)
++
++    def gcode_output_handler(self, msg):
++        self._last_gcode_output = msg
++
++    def _screen_update(self, eventtime):
++        stats = self.printer.lookup_object(
++            "print_stats").get_status(self.reactor.monotonic())
++
++        for heater in self.heaters:
++            current_temp, target_temp = heater.get_temp(eventtime)
++            if heater.name == 'heater_bed':
++                self.updateTextVariable("main.bedtemp.txt",
++                                '%.0f / %.0f' % (current_temp, target_temp))
++            else:
++                self.updateTextVariable("main.nozzletemp.txt",
++                                '%.0f / %.0f' % (current_temp, target_temp))
++
++        if self._is_led_on(eventtime):
++            self.send_text("status_led2=1")
++        else:
++            self.send_text("status_led2=0")
++
++        g_status = self.printer.lookup_object("gcode_move").get_status()
++
++        self.updateNumericVariable("printpause.zvalue.vvs1", "2")
++        self.send_text(
++            "printpause.zvalue.val=%.0f" % (g_status['position'].z * 100))
++
++        fan = self.printer.lookup_object("fan")
++        self.updateTextVariable("printpause.fanspeed.txt",
++                    "%.0f%%" % (fan.get_status(eventtime)['speed'] * 100))
++
++        last_state = self._print_state
++        self._print_state = stats['state']
++
++        if stats['state'] == 'printing' and last_state != stats['state']:
++            self.send_text("page printpause")
++        if stats['state'] == 'complete' and last_state != stats['state']:
++            self.send_text("page main")
++
++        return eventtime + self._update_interval
++
++    def _is_led_on(self, eventtime):
++        for led in self.leds:
++            status = led.get_status(eventtime)
++            white = status["color_data"][0][3]
++
++            if white > 0:
++                return True
++            else:
++                return False
++
++    def _handle_serial_bridge_response(self, data):
++        byte_debug = ' '.join(['0x{:02x}'.format(byte) for byte in data])
++        self.log("Received message: " + byte_debug)
++        messages = []
++        message = self._last_message if self._last_message else None
++
++        for byte in data:
++            #self.log(f"Process data: state {self._serial_state} {message}")
++            if self._serial_state == SERIAL_STATE_HEADER_NONE:
++                if byte == SERIAL_HEADER_BYTE_1:
++                    self._serial_state = SERIAL_STATE_HEADER_ONE
++                else:
++                    self._serial_state = SERIAL_STATE_HEADER_NONE
++            elif self._serial_state == SERIAL_STATE_HEADER_ONE:
++                if byte == SERIAL_HEADER_BYTE_2:
++                    self._serial_state = SERIAL_STATE_HEADER_TWO
++                else:
++                    self._serial_state = SERIAL_STATE_HEADER_NONE
++            elif self._serial_state == SERIAL_STATE_HEADER_TWO:
++                self._serial_state = SERIAL_STATE_HEADER_MESSAGE
++                message = Message()
++                message.payload = []
++                message.length = byte
++                self._last_message = message
++            elif self._serial_state == SERIAL_STATE_HEADER_MESSAGE:
++                message.payload.append(byte)
++
++                if len(message.payload) == message.length:
++                    messages.append(message)
++                    message = None
++                    self._last_message = None
++                    self._serial_state = SERIAL_STATE_HEADER_NONE
++
++        for message in messages:
++            message.process_datagram()
++            self.process_message(message)
++
++    def process_message(self, message):
++        self.log("Process message: " + str(message))
++
++        move = self.printer.lookup_object("gcode_move")
++        extrusion_factor = move.extrude_factor
++
++        if message.command == DGUS_CMD_READVAR:
++            for Processor in CommandProcessors:
++                Processor.process_if_match(message, self)
++
++    def run_delayed_gcode(self, gcode, callback=None):
++        self._gcode_callbacks[
++            str(time.time())] = {"gcode": gcode, "callback": callback}
++
++        self.reactor.register_timer(
++            self.gcode_command_timer, self.reactor.monotonic())
++
++    def gcode_command_timer(self, eventtime):
++        with self.mutex:
++            for time in list(self._gcode_callbacks.keys()):
++                command = self._gcode_callbacks[time]
++                del self._gcode_callbacks[time]
++                code = command["gcode"]
++                callback = command["callback"]
++
++                self.log("Running delayed gcode: " + code)
++                try:
++                    self.gcode.run_script(code)
++                    if callback:
++                        callback()
++                except Exception as e:
++                    self.send_text("page wait")
++                    self.updateTextVariable(
++                        "wait.t1.txt", self._last_gcode_output)
++                    self.send_text("beep 2000")
++                    self.reactor.register_timer(
++                        self.load_main_page, self.reactor.monotonic() + 4)
++                    self.error("Error running gcode script: " + str(e))
++
++                self.log("Running delayed complete: " + code)
++
++            return self.reactor.NEVER
++
++    def load_main_page(self, eventtime):
++        self.send_text("page main")
++        return self.reactor.NEVER
++
++    def _screen_init(self, eventtime):
++
++        move = self.printer.lookup_object(
++            "gcode_move").get_status(self.reactor.monotonic())
++        probe = self.printer.lookup_object("probe")
++
++        self.send_text("page boot")
++        self.send_text("com_star")
++        self.send_text("main.va0.val=%d" % (self._get_variant()))
++        self.send_text("page main")
++        self.send_text("information.sversion.txt=\"Klipper\"")
++        self.updateNumericVariable("restFlag1", "1") #paused
++        self.updateNumericVariable("restFlag2", "1") #allow pause
++        (x,y,z) = probe.get_offsets()
++        homing_z = move['homing_origin'].z
++        self.updateNumericVariable(
++            "leveldata.z_offset.val", "%.0f" % ((homing_z - z) * 100))
++
++        self.reactor.update_timer(
++            self._update_timer, eventtime + self._update_interval)
++        return self.reactor.NEVER
++
++    def updateTextVariable(self, key, value):
++        self.send_text("%s=\"%s\"" % (key, value))
++
++    def updateNumericVariable(self, key, value):
++        self.send_text("%s=%s" % (key, value))
++
++    def _get_variant(self):
++        if self.variant == "3Pro":
++            return 1
++        elif self.variant == "3Max":
++            return 3
++        elif self.variant == "3Plus":
++            return 2
++        else:
++            return 1
++
++    def get_estimated_print_time(self):
++        stats = self.printer.lookup_object(
++            "print_stats").get_status(self.reactor.monotonic())
++        sd = self.printer.lookup_object(
++            "virtual_sdcard").get_status(self.reactor.monotonic())
++
++        if sd:
++            return (
++                stats['print_duration'] / sd['progress']
++            ) if sd['progress'] > 0 else 0
++        else:
++            return stats['print_duration']
++
++    def update_file_list(self):
++        sd = self.printer.lookup_object("virtual_sdcard")
++
++        if sd:
++            self._file_list = sd.get_file_list()
++            index = 0
++
++            current_file_index = self._file_page_number * self._file_per_page
++            next_file_index = current_file_index + self._file_per_page
++
++            for i in range(8):
++                self.updateTextVariable("printfiles.t%d.txt" % (i), "")
++
++            for fname, fsize in self._file_list:
++                if index >= current_file_index and index < next_file_index:
++                    self.log("Sending file %s" % (fname))
++                    self.updateTextVariable(
++                        "printfiles.t%d.txt" %((index % self._file_per_page)),
++                            fname)
++                index+=1
++
++    def handle_ready(self):
++        self.log("Ready")
++        pheaters = self.printer.lookup_object('heaters')
++        self.printer.load_object(self.config, 'heaters')
++        heater_names = self.config.getlist(
++            "heater", ("extruder", "heater_bed"))
++
++        self.heaters = [pheaters.lookup_heater(n) for n in heater_names]
++
++        self.reactor.register_timer(
++            self._reset_screen, self.reactor.monotonic())
++
++        pled = self.printer.lookup_object("led")
++        self.leds =  [
++            pled.led_helpers.get(n) for n in pled.led_helpers.keys()
++        ]
++
++        #for n in self.printer.lookup_objects():
++        #    self.log(f"object: {n}" )
++
++    def send_text(self, text):
++        self.serial_bridge.send_text(text)
++
++    def log(self, msg, *args, **kwargs):
++        if self._logging:
++            logging.info("Neptune Screen: " + str(msg))
++
++    def error(self, msg, *args, **kwargs):
++        logging.error("Neptune Screen: " + str(msg))
++
++    def _reset_screen(self, eventtime):
++        self.log("Reset")
++        self.send_text("com_star")
++        self.send_text("rest")
++        self.reactor.register_timer(
++            self._screen_init, self.reactor.monotonic() + 2.)
++        return self.reactor.NEVER
++
++def load_config(config):
++    return NeptuneScreen(config)
++
++class Message:
++    def __init__(self):
++        self.command = None
++        self.payload = []
++        self.length = None
++        self.command_data_length = None
++        self.command_data = None
++        self.command_address = None
++
++    def process_datagram(self):
++        self.command = self.payload[0]
++        self.command_address = (
++            (self.payload[1] & 0xff) << 8) | (self.payload[2] & 0xff)
++        self.command_data_length = self.payload[3]
++
++        self.command_data = []
++        it = iter(self.payload[4:])
++        for byte in it:
++            self.command_data.append(((byte & 0xff) << 8) | (next(it) & 0xff))
++
++    def __str__(self):
++        payload_str = ' '.join(['0x%02x' % byte for byte in self.payload])
++        return 'payload: %s, ' \
++            'length: %s, command: 0x%02x, ' \
++            'command_address: 0x%04x ' \
++            'command_data_length: %s, ' \
++            'command_data: %s' % (
++                payload_str,
++                self.length,
++                self.command,
++                self.command_address,
++                self.command_data_length,
++                self.command_data
++            )
++DGUS_KEY_MAIN_PAGE = 0x1002
++DGUS_KEY_STOP_PRINT = 0x1008
++DGUS_KEY_PAUSE_PRINT = 0x100A
++DGUS_KEY_RESUME_PRINT = 0x100C
++DGUS_KEY_ADJUSTMENT = 0x1004
++DGUS_KEY_TEMP_SCREEN = 0x1030
++DGUS_KEY_SETTING_BACK_KEY = 0x1040
++DGUS_KEY_COOL_SCREEN = 0x1032
++DGUS_KEY_HEATER0_TEMP_ENTER = 0x1034
++DGUS_KEY_HOTBED_TEMP_ENTER = 0x103A
++DGUS_KEY_SETTING_SCREEN = 0x103E
++DGUS_KEY_BED_LEVEL = 0x1044
++DGUS_KEY_AXIS_PAGE_SELECT = 0x1046
++DGUS_KEY_XAXIS_MOVE_KEY = 0x1048
++DGUS_KEY_YAXIS_MOVE_KEY = 0x104A
++DGUS_KEY_ZAXIS_MOVE_KEY = 0x104C
++DGUS_KEY_HEATER0_LOAD_ENTER = 0x1054
++DGUS_KEY_FILAMENT_LOAD = 0x1056
++DGUS_KEY_HEATER1_LOAD_ENTER = 0x1058
++DGUS_KEY_POWER_CONTINUE = 0x105f
++DGUS_KEY_PRINT_FILE = 0x2198
++DGUS_KEY_SELECT_FILE = 0x2199
++DGUS_KEY_HARDWARE_TEST = 0x2202
++DGUS_KEY_PRINT_FILES = 0x2204
++DGUS_KEY_PRINT_CONFIRM = 0x2205
++
++class CommandProcessor():
++    __metaclass = ABCMeta
++    def __init__(self, address, command=None):
++        self.address = address
++        self.command = command
++        pass
++
++    def is_match(self, message):
++        return message.command_address == self.address and (
++            self.command is None or self.command == message.command_data[0])
++
++    def process_if_match(self, message, screen):
++        if self.is_match(message):
++            self.process(message, screen)
++
++    @abstractmethod
++    def process(self, data, screen):
++        pass
++
++class MainPageProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x1: #print button
++            status = screen.printer.lookup_object(
++                "print_stats").get_status(screen.reactor.monotonic())
++            sd = screen.printer.lookup_object("virtual_sdcard")
++
++            if status['state'] in ['printing', 'paused']:
++                screen.send_text("page printpause")
++            else:
++                screen._file_page_number = 0
++
++                if screen._version >= 142:
++                    screen.send_text("page printfiles")
++                    screen.update_file_list()
++                else:
++                    screen.send_text("page file1")
++
++                    limit = 25
++                    screen._file_list = sd.get_file_list()
++                    index = 0
++                    for fname, fsize in screen._file_list:
++                        if(index <= limit):
++                            screen.log("Sending file %s" %(fname))
++                            page = ((index // 5) + 1)
++                            screen.updateTextVariable(
++                                "file%d.t%d.txt" % (page, index), fname)
++                            index+=1
++
++
++class BedLevelProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x2 or (
++            message.command_data[0] == 0x3): #z-offset up/down
++            move = screen.printer.lookup_object(
++                "gcode_move").get_status(screen.reactor.monotonic())
++            probe = screen.printer.lookup_object("probe")
++
++            unit = screen._zoffset_unit
++            if message.command_data[0] == 0x3:
++                unit *= -1
++
++            (x,y,z) = probe.get_offsets()
++
++            homing_z = move['homing_origin'].z
++            new_offset = homing_z + unit
++
++            screen.run_delayed_gcode(
++                "SET_GCODE_OFFSET Z=%.3f MOVE=1" % (new_offset))
++
++            screen.updateNumericVariable(
++                "leveldata.z_offset.val", "%.0f" % ((new_offset - z) * 100))
++            screen.updateNumericVariable("adjustzoffset.z_offset.val",
++                                            "%.0f" % ((new_offset - z) * 100))
++        if message.command_data[0] == 0x4: #z-offset unit 0.01
++            screen._zoffset_unit = 0.01
++            screen.updateNumericVariable(
++                "adjustzoffset.zoffset_value.val", "1")
++        if message.command_data[0] == 0x5: #z-offset unit 0.1
++            screen._zoffset_unit = 0.1
++            screen.updateNumericVariable(
++                "adjustzoffset.zoffset_value.val", "2")
++        if message.command_data[0] == 0x6: #z-offset unit 1
++            screen._zoffset_unit = 1
++            screen.updateNumericVariable(
++                "adjustzoffset.zoffset_value.val", "3")
++        if message.command_data[0] == 0x8: #light button
++            pled = screen.printer.lookup_object("led")
++            for n in pled.led_helpers.keys():
++                status = pled.led_helpers[n].get_status(None)
++                white = status["color_data"][0][3]
++
++                if white > 0:
++                    screen.run_delayed_gcode("SET_LED LED=%s WHITE=0" % (n))
++                else:
++                    screen.run_delayed_gcode("SET_LED LED=%s WHITE=1" % (n))
++        if message.command_data[0] == 0x9: #bed level calibrate
++            screen.run_delayed_gcode(
++                "BED_MESH_CLEAR\n" \
++                "M140 S60\nM104 S140\n" \
++                "M109 S140\nM190 S60\n" \
++                "BED_MESH_CALIBRATE LIFT_SPEED=2\n" \
++                "G28\n" \
++                "G1 F200 Z0", lambda: (
++                screen.send_text("page leveldata_36"),
++                screen.send_text("page warn_zoffset")
++            ))
++        if message.command_data[0] == 0xa: #print pause request status
++            move = screen.printer.lookup_object(
++                "gcode_move").get_status(screen.reactor.monotonic())
++            stats = screen.printer.lookup_object(
++                "print_stats").get_status(screen.reactor.monotonic())
++            sd = screen.printer.lookup_object(
++                "virtual_sdcard").get_status(screen.reactor.monotonic())
++            fan = screen.printer.lookup_object("fan")
++
++            estimated_time_left = screen.get_estimated_print_time()
++
++            if sd:
++                screen.updateNumericVariable("printpause.printprocess.val",
++                                            "%.0f" % (sd['progress'] * 100))
++                screen.updateTextVariable("printpause.printvalue.txt",
++                                            "%.0f" % (sd['progress'] * 100))
++            else:
++                screen.updateNumericVariable(
++                    "printpause.printprocess.val", "0")
++                screen.updateTextVariable(
++                    "printpause.printvalue.txt","0")
++
++            screen.updateTextVariable(
++                "printpause.t0.txt", stats['filename'])
++
++            current_time = stats['print_duration'] / 60.0
++            estimated_time = estimated_time_left / 60
++            screen.updateTextVariable("printpause.printtime.txt",
++                    "%.0f / %.0f min" % (current_time, estimated_time))
++
++            mono = screen.reactor.monotonic()
++            screen.updateTextVariable("printpause.fanspeed.txt",
++                    "%.0f%%" % (fan.get_status(mono)['speed'] * 100))
++
++        if message.command_data[0] == 0x16: #print initial request
++            move = screen.printer.lookup_object(
++                "gcode_move").get_status(screen.reactor.monotonic())
++            stats = screen.printer.lookup_object(
++                "print_stats").get_status(screen.reactor.monotonic())
++            sd = screen.printer.lookup_object(
++                "virtual_sdcard").get_status(screen.reactor.monotonic())
++
++            estimated_time_left = screen.get_estimated_print_time()
++
++            screen.updateTextVariable("printpause.printspeed.txt",
++                                    "%.0f" % (move['speed_factor'] * 100))
++
++            current_time = stats['print_duration'] / 60.0
++            estimated_time = estimated_time_left / 60
++            screen.updateTextVariable("printpause.printtime.txt",
++                    "%.0f / %.0f min" % (current_time, estimated_time))
++
++            if sd:
++                screen.updateNumericVariable("printpause.printprocess.val",
++                                            "%.0f" % (sd['progress'] * 100))
++                screen.updateTextVariable("printpause.printvalue.txt",
++                                            "%.0f" % (sd['progress'] * 100))
++            else:
++                screen.updateNumericVariable(
++                    "printpause.printprocess.val", "0")
++                screen.updateTextVariable(
++                    "printpause.printvalue.txt", "0")
++
++            #restFlag1: 0 - printing, 1- paused
++            #restFlag2: m76 pauses print timer
++            #   setting this to 0 and restflag to 1, 1
++            # --abort sd, 1 when hotend temp reached
++            #   can only pause print when restflag2=1
++
++            if stats['state'] == 'printing':
++                screen.updateNumericVariable("restFlag1", "0")
++            else:
++                screen.updateNumericVariable("restFlag1", "1")
++
++class AdjustmentProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x1:
++            screen._temp_and_rate_unit = 10
++            screen._temp_ctrl = 'extruder'
++            heater = screen.printer.lookup_object(
++                'heaters').lookup_heater(screen._temp_ctrl)
++
++            mono = screen.reactor.monotonic()
++            (current_temp, target_temp) = heater.get_temp(mono)
++            screen.updateNumericVariable(
++                "adjusttemp.targettemp.val", "%.0f" % (target_temp))
++        if message.command_data[0] == 0x02:
++            screen.send_text("page printpause")
++        if message.command_data[0] == 0x05:
++            screen._temp_and_rate_unit = 10
++            screen.send_text("page adjusttemp")
++        if message.command_data[0] == 0x06: #speed adjustment page
++            screen._temp_and_rate_unit = 10
++            screen._speed_ctrl = 'feedrate'
++
++            move = screen.printer.lookup_object(
++                "gcode_move").get_status(screen.reactor.monotonic())
++
++            screen.updateNumericVariable("adjustspeed.targetspeed.val",
++                                    "%.0f" % (move['speed_factor'] * 100))
++            screen.send_text("page adjustspeed")
++        if message.command_data[0] == 0x07: #adjust screen button
++            move = screen.printer.lookup_object(
++                "gcode_move").get_status(screen.reactor.monotonic())
++            probe = screen.printer.lookup_object("probe")
++
++            screen._zoffset_unit = 0.1
++            (x,y,z) = probe.get_offsets()
++
++            homing_z = move['homing_origin'].z
++
++            screen.updateNumericVariable(
++                "adjustzoffset.zoffset_value.val", "2")
++            screen.updateNumericVariable("adjustzoffset.z_offset.val",
++                                        "%.0f" % ((homing_z - z) * 100))
++            screen.send_text("page adjustzoffset")
++
++        if message.command_data[0] == 0x08: #reset target feedrate
++            screen.run_delayed_gcode("M220 S100")
++            screen.updateNumericVariable(
++                "adjustspeed.targetspeed.val", "100")
++        if message.command_data[0] == 0x09: #reset target flow
++            screen.run_delayed_gcode("M221 S100")
++            screen.updateNumericVariable(
++                "adjustspeed.targetspeed.val", "100")
++        if message.command_data[0] == 0x0A: #reset target fanspeed - 100%
++            screen.run_delayed_gcode("M106 S255")
++            screen.updateNumericVariable(
++                "adjustspeed.targetspeed.val", "100")
++
++class TempScreenProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x1: #get hotend temp
++            screen._temp_ctrl = 'extruder'
++            heater = screen.printer.lookup_object(
++                'heaters').lookup_heater(screen._temp_ctrl)
++            (current_temp, target_temp) = heater.get_temp(
++                screen.reactor.monotonic())
++            screen.updateNumericVariable(
++                "adjusttemp.targettemp.val", '%.0f' % (target_temp))
++        if message.command_data[0] == 0x3: #get bed temp
++            screen._temp_ctrl = 'heater_bed'
++            heater = screen.printer.lookup_object(
++                'heaters').lookup_heater(screen._temp_ctrl)
++            (current_temp, target_temp) = heater.get_temp(
++                screen.reactor.monotonic())
++            screen.updateNumericVariable(
++                "adjusttemp.targettemp.val", '%.0f' % (target_temp))
++        if message.command_data[0] == 0x5: #.1mm
++            screen._axis_unit = 0.1
++            screen._temp_and_rate_unit = 1
++            screen._acceleration_unit = 10
++        if message.command_data[0] == 0x6: #1mm
++            screen._axis_unit = 1.0
++            screen._temp_and_rate_unit = 5
++            screen._acceleration_unit = 50
++        if message.command_data[0] == 0x7: #10mm
++            screen._axis_unit = 10.0
++            screen._temp_and_rate_unit = 10
++            screen._acceleration_unit = 100
++        if message.command_data[0] == 0x8 or (
++                message.command_data[0] == 0x9): #increase
++                                                 #hotend temp by temp_unit
++            heater = screen.printer.lookup_object(
++                'heaters').lookup_heater(screen._temp_ctrl)
++            (current_temp, target_temp) = heater.get_temp(
++                screen.reactor.monotonic())
++
++            min_temp = 25
++            max_temp = 0
++            if screen._temp_ctrl == 'extruder':
++                max_temp = 230
++            elif screen._temp_ctrl == 'heater_bed':
++                max_temp = 125
++
++            new_target_temp = target_temp + screen._temp_and_rate_unit * (
++                                1 if message.command_data[0] == 0x8 else - 1)
++
++            if new_target_temp >= min_temp and new_target_temp <= max_temp:
++                gcode = ('M104' if screen._temp_ctrl == 'extruder' else 'M140')
++                screen.run_delayed_gcode("%s S%.0f" % (gcode, new_target_temp))
++                screen.updateNumericVariable(
++                    "adjusttemp.targettemp.val", '%.0f' % (new_target_temp))
++
++        if message.command_data[0] == 0xA: #speed rate get
++            screen._speed_ctrl = 'feedrate'
++            move = screen.printer.lookup_object(
++                "gcode_move").get_status(screen.reactor.monotonic())
++            screen.updateNumericVariable("adjustspeed.targetspeed.val",
++                                        "%.0f" % (move['speed_factor'] * 100))
++        if message.command_data[0] == 0xB: #flow control get
++            screen._speed_ctrl = 'flowrate'
++            move = screen.printer.lookup_object(
++                "gcode_move").get_status(screen.reactor.monotonic())
++            screen.updateNumericVariable("adjustspeed.targetspeed.val",
++                                    "%.0f" % (move['extrude_factor'] * 100))
++        if message.command_data[0] == 0xC: #fan speed get
++            screen._speed_ctrl = 'fanspeed'
++            fan = screen.printer.lookup_object("fan")
++
++            mono = screen.reactor.monotonic()
++            screen.updateNumericVariable("adjustspeed.targetspeed.val",
++                            "%.0f" % (fan.get_status(mono)['speed'] * 100))
++        if message.command_data[0] == 0xD or (
++                message.command_data[0] == 0xE): #increase/decrease rate
++            unit = screen._temp_and_rate_unit
++
++            if message.command_data[0] == 0xE: #increase
++                unit *= -1
++
++            if screen._speed_ctrl == 'feedrate':
++                move = screen.printer.lookup_object(
++                    "gcode_move").get_status(screen.reactor.monotonic())
++
++                new_rate = (move['speed_factor'] + (unit / 100.0)) * 100
++
++                min_rate = 0
++                if new_rate < min_rate:
++                    new_rate = min_rate
++
++                screen.run_delayed_gcode("M220 S%.0f" % (new_rate))
++                screen.updateNumericVariable(
++                    "adjustspeed.targetspeed.val", "%.0f" % (new_rate))
++            if screen._speed_ctrl == 'flowrate':
++                move = screen.printer.lookup_object(
++                    "gcode_move").get_status(screen.reactor.monotonic())
++                new_rate = (move['extrude_factor'] + (unit / 100.0)) * 100
++
++                max_rate = 150
++                if new_rate > max_rate:
++                    new_rate = max_rate
++
++                min_rate = 0
++                if new_rate < min_rate:
++                    new_rate = min_rate
++
++                screen.run_delayed_gcode("M221 S%.0f" % (new_rate))
++                screen.updateNumericVariable(
++                    "adjustspeed.targetspeed.val","%.0f" % (new_rate))
++            if screen._speed_ctrl == 'fanspeed':
++                fan = screen.printer.lookup_object("fan")
++                new_rate = fan.get_status(
++                    screen.reactor.monotonic())['speed'] + (unit / 100.0)
++
++                max_rate = 1
++                if new_rate > max_rate:
++                    new_rate = max_rate
++
++                min_rate = 0
++                if new_rate < min_rate:
++                    new_rate = min_rate
++
++                screen.run_delayed_gcode("M106 S%.0f" % ((new_rate * 255.0)))
++                screen.updateNumericVariable(
++                    "adjustspeed.targetspeed.val", "%.0f" % (new_rate * 100))
++        if message.command_data[0] in [0x10, 0x0f]: #speed setting page,
++                                                    #acceleration page
++            screen._acceleration_unit = 100
++            toolhead = screen.printer.lookup_object(
++                "toolhead").get_status(screen.reactor.monotonic())
++            #speedsetvalue.t0.txt - x
++            #speedsetvalue.t1.txt - y
++            #speedsetvalue.t2.txt - z
++            #speedsetvalue.t3.txt - e
++            #speesetvalue.xaxis.val
++            #speesetvalue.yaxis.val
++            #speesetvalue.zaxis.val
++            #speesetvalue.eaxis.val
++            screen.updateTextVariable("speedsetvalue.t0.txt", "Accel.")
++            screen.updateTextVariable(
++                "speedsetvalue.t1.txt", "Max Accel. to Decel.")
++            screen.updateTextVariable("speedsetvalue.t2.txt", "SCV")
++            screen.updateTextVariable("speedsetvalue.t3.txt", "Velocity")
++            screen.updateNumericVariable(
++                "speedsetvalue.xaxis.val", '%.0f' % (toolhead["max_accel"]))
++            screen.updateNumericVariable("speedsetvalue.yaxis.val",
++                                '%.0f' % (toolhead["max_accel_to_decel"]))
++            screen.updateNumericVariable("speedsetvalue.zaxis.val",
++                                '%.0f' % (toolhead["square_corner_velocity"]))
++            screen.updateNumericVariable("speedsetvalue.eaxis.val",
++                                '%.0f' % (toolhead["max_velocity"]))
++        #axis acceleration down (0x11 - 0x14) / up (0x15, - 0x18)
++        if message.command_data[0] in [
++                0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]:
++            toolhead = screen.printer.lookup_object("toolhead")
++            status = toolhead.get_status(screen.reactor.monotonic())
++            unit = screen._acceleration_unit
++
++            if message.command_data[0] == 0x11: #accel -
++                val = status['max_accel'] - unit
++                screen.run_delayed_gcode(
++                    "SET_VELOCITY_LIMIT ACCEL=%.0f" % (val))
++                screen.updateNumericVariable("speedsetvalue.xaxis.val",
++                    '%.0f' % (val))
++            if message.command_data[0] == 0x12: #decel -
++                val = status['max_accel_to_decel'] - unit
++                screen.run_delayed_gcode(
++                    "SET_VELOCITY_LIMIT ACCEL_TO_DECEL=%.0f" % (val))
++                screen.updateNumericVariable("speedsetvalue.yaxis.val",
++                    '%.0f' % (val))
++
++            if message.command_data[0] == 0x13: #scv -
++                unit = unit // 10
++                val = status['square_corner_velocity'] - unit
++                screen.run_delayed_gcode(
++                    "SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=%.0f" % (val))
++                screen.updateNumericVariable("speedsetvalue.zaxis.val",
++                   '%.0f' % (val))
++            if message.command_data[0] == 0x14: #velocity -
++                val = status['max_velocity'] - unit
++                screen.run_delayed_gcode(
++                    "SET_VELOCITY_LIMIT VELOCITY=%.0f" % (val))
++                screen.updateNumericVariable("speedsetvalue.eaxis.val",
++                    '%.0f' % (val))
++            if message.command_data[0] == 0x15: #accel +
++                val = status['max_accel'] + unit
++                screen.run_delayed_gcode(
++                    "SET_VELOCITY_LIMIT ACCEL=%.0f" % (val))
++                screen.updateNumericVariable("speedsetvalue.xaxis.val",
++                    '%.0f' % (val))
++            if message.command_data[0] == 0x16: #decel +
++                val = status['max_accel_to_decel'] + unit
++                screen.run_delayed_gcode(
++                    "SET_VELOCITY_LIMIT ACCEL_TO_DECEL=%.0f" % (val))
++                screen.updateNumericVariable("speedsetvalue.yaxis.val",
++                   '%.0f' % (val))
++            if message.command_data[0] == 0x17: #scv +
++                unit = unit // 10
++                val = status['square_corner_velocity'] + unit
++                screen.run_delayed_gcode(
++                    "SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=%.0f" % (val))
++                screen.updateNumericVariable("speedsetvalue.zaxis.val",
++                   '%.0f' % (val))
++            if message.command_data[0] == 0x18: #velocity +
++                val = status['max_velocity'] + unit
++                screen.run_delayed_gcode(
++                    "SET_VELOCITY_LIMIT VELOCITY=%.0f" % (val))
++                screen.updateNumericVariable("speedsetvalue.eaxis.val",
++                   '%.0f' % (val))
++
++class CoolScreenProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 1: #power off hotend
++            screen.run_delayed_gcode("M104 S0")
++        if message.command_data[0] == 2: #power off bed
++            screen.run_delayed_gcode("M140 S0")
++        if message.command_data[0] == 13: #pla temp
++            screen._temp_and_rate_unit = 10
++        if message.command_data[0] == 14: #petg temp
++            screen._temp_and_rate_unit = 10
++        if message.command_data[0] == 15: #abs temp
++            screen._temp_and_rate_unit = 10
++        if message.command_data[0] == 16: #tpu temp
++            screen._temp_and_rate_unit = 10
++        if message.command_data[0] == 17:
++            screen._temp_and_rate_unit = 10
++
++class AxisPageSelectProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 1:
++            screen._axis_unit = 0.1
++        elif message.command_data[0] == 2:
++            screen._axis_unit = 1.0
++        elif message.command_data[0] == 3:
++            screen._axis_unit = 10
++        elif message.command_data[0] == 4:
++            screen.send_text("page autohome")
++            screen.run_delayed_gcode("G28", lambda:(
++                screen.send_text("page premove")
++            ))
++        elif message.command_data[0] == 5:
++            screen.send_text("page autohome")
++            screen.run_delayed_gcode("G28 X", lambda:(
++                screen.send_text("page premove")
++            ))
++        elif message.command_data[0] == 6:
++            screen.send_text("page autohome")
++            screen.run_delayed_gcode("G28 Y", lambda:(
++                screen.send_text("page premove")
++            ))
++        elif message.command_data[0] == 7:
++            screen.send_text("page autohome")
++            screen.run_delayed_gcode("G28 Z", lambda:(
++                screen.send_text("page premove")
++            ))
++
++class ZAxisMoveKeyProcessor(CommandProcessor):
++    def process(self, message, screen):
++        move = screen.printer.lookup_object("gcode_move")
++        current_z = move.get_status()["gcode_position"].z
++        if message.command_data[0] == 0x01:
++            if move.absolute_coord:
++                screen.run_delayed_gcode(
++                    "G0 Z%.0f" %(current_z + screen._axis_unit))
++            else:
++                screen.run_delayed_gcode("G0 Z+%.0f" % (screen._axis_unit))
++        else:
++            if move.absolute_coord:
++                screen.run_delayed_gcode(
++                   "G0 Z%.0f" %(current_z - screen._axis_unit))
++            else:
++                screen.run_delayed_gcode("G0 Z-%.0f" % (screen._axis_unit))
++
++class YAxisMoveKeyProcessor(CommandProcessor):
++    def process(self, message, screen):
++        move = screen.printer.lookup_object("gcode_move")
++        current_y = move.get_status()["gcode_position"].y
++        if message.command_data[0] == 0x01:
++            if move.absolute_coord:
++                screen.run_delayed_gcode(
++                   "G0 Y%.0f" %(current_y + screen._axis_unit))
++            else:
++                screen.run_delayed_gcode("G0 Y+%.0f" % (screen._axis_unit))
++        else:
++            if move.absolute_coord:
++                screen.run_delayed_gcode(
++                    "G0 Y%.0f" %(current_y - screen._axis_unit))
++            else:
++                screen.run_delayed_gcode("G0 Y-%.0f" % (screen._axis_unit))
++
++class XAxisMoveKeyProcessor(CommandProcessor):
++    def process(self, message, screen):
++        move = screen.printer.lookup_object("gcode_move")
++        current_x = move.get_status()["gcode_position"].x
++        if message.command_data[0] == 0x01:
++            if move.absolute_coord:
++                screen.run_delayed_gcode(
++                   "G0 X%.0f" %(current_x + screen._axis_unit))
++            else:
++                screen.run_delayed_gcode("G0 X+%.0f" % (screen._axis_unit))
++        else:
++            if move.absolute_coord:
++                screen.run_delayed_gcode(
++                    "G0 X%.0f" %(current_x - screen._axis_unit))
++            else:
++                screen.run_delayed_gcode("G0 X-%.0f" % (screen._axis_unit))
++
++class Heater0KeyProcessor(CommandProcessor): #heater temp
++    def process(self, message, screen):
++        temp = ((message.command_data[0] & 0xff00) >> 8) \
++                 | ((message.command_data[0] & 0x00ff) << 8)
++        screen.run_delayed_gcode("M104 S%d" % (temp))
++        screen.send_text(
++            "pretemp.nozzletemp.txt=\" %d / %d\"" % (0, temp)) #todo
++
++class HeaterBedKeyProcessor(CommandProcessor): #bed temp
++    def process(self, message, screen):
++        temp = ((message.command_data[0] & 0xff00) >> 8)  | \
++            ((message.command_data[0] & 0x00ff) << 8)
++        screen.run_delayed_gcode("M140 S%d" % (temp))
++        screen.send_text("pretemp.bedtemp.txt=\" %d / %d\"" % (0, temp)) #todo
++
++class SettingScreenProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x1:
++            screen.send_text("page autohome")
++            screen.run_delayed_gcode("G28\ng1 f200 Z0.00", lambda: (
++                screen.updateNumericVariable(
++                    "leveling.va1.val", "%d" % (screen._get_variant())),
++                screen.send_text("page leveldata_36"),
++                screen.send_text("leveling_36.tm0.en=0"),
++                screen.send_text("leveling.tm0.en=0")
++            ))
++        if message.command_data[0] == 0x6:
++            screen.run_delayed_gcode("M84")
++        if message.command_data[0] == 0x7:
++            fan = screen.printer.lookup_object("fan")
++            if fan.get_status(screen.reactor.monotonic())['speed']:
++                screen.run_delayed_gcode("M106 S0")
++                screen.updateNumericVariable("set.va0.val", "0")
++            else:
++                screen.run_delayed_gcode("M106 S255")
++                screen.updateNumericVariable("set.va0.val", "1")
++        if message.command_data[0] == 0x0A: #load filamnet screen
++            screen.send_text("page prefilament")
++            screen.updateTextVariable("prefilament.filamentlength.txt",
++                             "%d" % (screen._filament_load_length))
++            screen.updateTextVariable("prefilament.filamentspeed.txt",
++                            "%d" % (screen._filament_load_feedrate))
++        if message.command_data[0] == 0xD: #settings page
++            screen.send_text("page multiset")
++
++class ResumePrintProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x1: #resume
++            screen.updateNumericVariable("restFlag1", "0")
++            screen.send_text("page wait")
++            screen.run_delayed_gcode("M24", lambda: (
++                screen.send_text("page printpause")
++            ))
++
++
++class PausePrintProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x1: #pause button pressed
++            screen.send_text("page pauseconfirm")
++        if message.command_data[0] == 0xF0: #cancel
++            pass #do nothing, screen change handled in tft
++        if message.command_data[0] == 0xF1: #pause button confirmed
++            screen.updateNumericVariable("restFlag1", "1")
++            screen.send_text("page wait")
++            screen.run_delayed_gcode("M25", lambda: (
++                screen.send_text("page printpause")
++            ))
++
++
++class StopPrintProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x1 or (
++            message.command_data[0] == 0xF1): #confirm stop print
++            screen.send_text("page wait")
++            screen.run_delayed_gcode("CANCEL_PRINT", lambda: (
++                screen.send_text("page main")
++            ))
++
++class HardwareTestProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x0F: #HARDWARE TEST
++                                            #CALLED FROM MAIN SCREEN
++            pass
++
++class SettingBackProcessor(CommandProcessor):
++    def restart_if_config_needed(self, screen):
++        config = screen.printer.lookup_object(
++            "configfile").get_status(screen.reactor.monotonic())
++
++        if config['save_config_pending']:
++            screen.send_text("page wait")
++            screen.run_delayed_gcode("SAVE_CONFIG")
++
++    def process(self, message, screen):
++        if message.command_data[0] == 0x01: #setting back key from leveling
++            screen.run_delayed_gcode(
++                "Z_OFFSET_APPLY_PROBE\nG1 F1000 Z.2", lambda:(
++                self.restart_if_config_needed(screen)
++            ))
++        if message.command_data[0] == 0x7: #lcd version
++            screen._version = message.command_data[1]
++
++class PrintFileProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x01: #confirm print
++            screen.run_delayed_gcode(
++                "SDCARD_PRINT_FILE FILENAME=\"%s\"" % (screen._requested_file))
++        if message.command_data[0] == 0x0B: #printfiles prev/next
++            if message.command_data[1] == 0x0: #previous
++                screen._file_page_number -= 1
++
++                if screen._file_page_number < 0:
++                    screen._file_page_number = 0
++
++                screen.update_file_list()
++
++            if message.command_data[1] == 0x1: #next
++                if (screen._file_page_number + 1) \
++                        * screen._file_per_page < len(screen._file_list):
++                    screen._file_page_number += 1
++
++                screen.update_file_list()
++
++
++class SelectFileProcessor(CommandProcessor):
++    def process(self, message, screen):
++        screen.updateTextVariable("askprint.t0.txt", "")
++        screen.updateTextVariable("printpause.t0.txt", "")
++
++        max_file = len(screen._file_list) - 1
++        requested_file = message.command_data[0] - 1
++
++        if requested_file > max_file:
++            screen.send_text("beep 2000")
++        else:
++            screen.updateTextVariable("askprint.t0.txt",
++                            screen._file_list[requested_file][0])
++            screen.updateTextVariable("printpause.t0.txt",
++                                screen._file_list[requested_file][0])
++            screen._requested_file = screen._file_list[requested_file][0]
++            screen.send_text("page askprint")
++
++class PowerContinueProcessor(CommandProcessor):
++    def process(self, message, screen):
++        if message.command_data[0] == 0x03: #resume printing
++            screen.send_text("page multiset")
++
++class PrintFilesProcessor(CommandProcessor):
++    def process(self, message, screen):
++        screen.updateTextVariable("printcnfirm.t0.txt", "")
++        screen.updateTextVariable("printpause.t0.txt", "")
++
++        max_file = len(screen._file_list) - 1
++        requested_file = screen._file_page_number \
++            * screen._file_per_page + message.command_data[0]
++
++        if requested_file > max_file:
++            screen.send_text("beep 2000")
++        else:
++            screen.updateTextVariable("printcnfirm.t0.txt",
++                                screen._file_list[requested_file][0])
++            screen.updateTextVariable("printpause.t0.txt",
++                                screen._file_list[requested_file][0])
++            screen._requested_file = screen._file_list[requested_file][0]
++
++            screen.updateNumericVariable("printcnfirm.t1.font", 0)
++            screen.updateNumericVariable("printcnfirm.t2.font", 0)
++            screen.updateNumericVariable("printcnfirm.t3.font", 0)
++            screen.updateTextVariable("printcnfirm.t1.txt",
++                                            "Print this model?")
++            screen.updateTextVariable("printcnfirm.t2.txt", "Confirm")
++            screen.updateTextVariable("printcnfirm.t3.txt", "Cancel")
++
++            screen.send_text("page printcnfirm")
++
++class FilamentLoadProcessor(CommandProcessor):
++    def process(self, message, screen):
++        move = screen.printer.lookup_object("gcode_move")
++        current_e = move.get_status()["gcode_position"].e
++
++        if message.command_data[0] == 0x01: #unload
++            if move.absolute_coord:
++                screen.run_delayed_gcode(
++                    "G0 E%.2f F%.2f" % (
++                    (current_e - screen._filament_load_length),
++                    screen._filament_load_feedrate
++                    ))
++            else:
++                screen.run_delayed_gcode(
++                    "G0 E-%.2f F%d" %(
++                        screen._filament_load_length,
++                        screen._filament_load_feedrate
++                    ))
++
++        if message.command_data[0] == 0x02: #load
++            if move.absolute_coord:
++                screen.run_delayed_gcode(
++                "G0 E%.2f F%.2f" % (
++                    current_e + screen._filament_load_length,
++                    screen._filament_load_feedrate
++                ))
++            else:
++                screen.run_delayed_gcode(
++                    "G0 E+%.2f F%d" %(
++                        screen._filament_load_length,
++                        screen._filament_load_feedrate
++                    ))
++
++class Heater0LoadEnterProcessor(CommandProcessor):
++    def process(self, message, screen):
++        length = (message.command_data[0] & 0xff) << 8 \
++                         | ((message.command_data[0] >> 8) & 0xff)
++        screen._filament_load_length = length
++        screen.updateTextVariable("prefilament.filamentlength.txt",
++                                "%d" % (screen._filament_load_length))
++
++class Heater1LoadEnterProcessor(CommandProcessor):
++    def process(self, message, screen):
++        feedrate = (message.command_data[0] & 0xff) << 8 \
++                        | ((message.command_data[0] >> 8) & 0xff)
++        screen._filament_load_feedrate = feedrate
++        screen.updateTextVariable("prefilament.filamentspeed.txt",
++                            "%d" % (screen._filament_load_feedrate))
++
++class PrintConfirmProcessor(CommandProcessor):
++    def process(self, message, screen):
++        screen.run_delayed_gcode(
++            "SDCARD_PRINT_FILE FILENAME=\"%s\"" % (
++                screen._requested_file
++            ))
++
++CommandProcessors = [
++    MainPageProcessor(DGUS_KEY_MAIN_PAGE),
++    BedLevelProcessor(DGUS_KEY_BED_LEVEL),
++    TempScreenProcessor(DGUS_KEY_TEMP_SCREEN),
++    CoolScreenProcessor(DGUS_KEY_COOL_SCREEN),
++    AxisPageSelectProcessor(DGUS_KEY_AXIS_PAGE_SELECT),
++    ZAxisMoveKeyProcessor(DGUS_KEY_ZAXIS_MOVE_KEY),
++    YAxisMoveKeyProcessor(DGUS_KEY_YAXIS_MOVE_KEY),
++    XAxisMoveKeyProcessor(DGUS_KEY_XAXIS_MOVE_KEY),
++    Heater0KeyProcessor(DGUS_KEY_HEATER0_TEMP_ENTER),
++    HeaterBedKeyProcessor(DGUS_KEY_HOTBED_TEMP_ENTER),
++    AdjustmentProcessor(DGUS_KEY_ADJUSTMENT),
++    SettingScreenProcessor(DGUS_KEY_SETTING_SCREEN),
++    ResumePrintProcessor(DGUS_KEY_RESUME_PRINT),
++    PausePrintProcessor(DGUS_KEY_PAUSE_PRINT),
++    StopPrintProcessor(DGUS_KEY_STOP_PRINT),
++    HardwareTestProcessor(DGUS_KEY_HARDWARE_TEST),
++    SettingBackProcessor(DGUS_KEY_SETTING_BACK_KEY),
++    PrintFileProcessor(DGUS_KEY_PRINT_FILE),
++    SelectFileProcessor(DGUS_KEY_SELECT_FILE),
++    PowerContinueProcessor(DGUS_KEY_POWER_CONTINUE),
++    PrintFilesProcessor(DGUS_KEY_PRINT_FILES),
++    FilamentLoadProcessor(DGUS_KEY_FILAMENT_LOAD),
++    Heater0LoadEnterProcessor(DGUS_KEY_HEATER0_LOAD_ENTER),
++    Heater1LoadEnterProcessor(DGUS_KEY_HEATER1_LOAD_ENTER),
++    PrintConfirmProcessor(DGUS_KEY_PRINT_CONFIRM)
++]
+diff --git a/klippy/extras/serial_bridge.py b/klippy/extras/serial_bridge.py
+new file mode 100644
+index 000000000000..a77ac6530df4
+--- /dev/null
++++ b/klippy/extras/serial_bridge.py
+@@ -0,0 +1,186 @@
++# Support for "serial bridge"
++#
++# Copyright (C) 2019-2020  Kevin O'Connor <kevin@koconnor.net>
++#
++# This file may be distributed under the terms of the GNU GPLv3 license.
++import logging, re
++
++QUERY_TIME = 0.2
++
++class SerialBridge:
++    def __init__(self, config):
++        self.mcus = {}
++        self.configs = []
++        self.printer = config.get_printer()
++        self.gcode = self.printer.lookup_object("gcode")
++        self.gcode.register_command("SERIAL_BRIDGE_SEND",
++            self.cmd_SERIAL_BRIDGE_SEND,
++            desc="Send a message to a uart bridge")
++        self.gcode.register_command("SERIAL_BRIDGE_LIST_CONFIGS",
++            self.cmd_SERIAL_BRIDGE_LIST_CONFIGS,
++            desc="List Available serial configs")
++        self.gcode.register_command("SERIAL_BRIDGE_LIST_BRIDGES",
++            self.cmd_SERIAL_BRIDGE_LIST_BRIDGES,
++            desc="List current bridges")
++        self.printer.register_event_handler("klippy:ready", self.handle_ready)
++        self.printer.register_event_handler("klippy:disconnect",
++            self.handle_disconnect)
++        self.bridges = {}
++
++    def handle_ready(self):
++        self._ready = True
++
++        self.mcus = self.printer.lookup_objects('mcu')
++
++        self.configs = []
++        for n, mcu in self.mcus:
++            constants = mcu.get_constants()
++            configs= (
++                ["%s=%s" % (k, v) for k,v in constants.items() \
++                    if k.startswith("SERIAL_BRIDGE_CONFIG")])
++
++            self.configs.extend(configs)
++            logging.info("Serial bridge: available configs for %s: " % (n)
++                 + ", ".join(configs))
++
++    def handle_disconnect(self):
++        pass
++
++    def setup_bridge(self, bridge):
++        self.bridges[bridge.name.split()[-1]] = bridge
++
++    def cmd_SERIAL_BRIDGE_LIST_CONFIGS(self, gcmd):
++        gcmd.respond_info((", ".join(self.configs)))
++
++    def cmd_SERIAL_BRIDGE_LIST_BRIDGES(self, gcmd):
++        gcmd.respond_info((", ".join(self.bridges.keys())))
++
++    def cmd_SERIAL_BRIDGE_SEND(self, gcmd):
++        text = gcmd.get("TEXT")
++        bridge = gcmd.get("BRIDGE")
++
++        if not bridge:
++            gcmd.respond_info("BRIDGE is required")
++            return
++
++        if bridge not in self.bridges:
++            gcmd.respond_info("BRIDGE not found")
++            return
++
++        self.bridges[bridge].send_serial(
++            self.perform_replacement(gcmd.get("TEXT")))
++
++    def get_configs(self):
++        return self.configs
++
++    def perform_replacement(self, input_string):
++        # Find all occurrences of "\x" followed by two hexadecimal digits
++        hex_matches = re.finditer(r'\\x([0-9a-fA-F]{2})', input_string)
++
++        # Replace each matched hex sequence with its corresponding bytes
++        replaced_bytes = bytearray()
++        last_index = 0
++
++        for match in hex_matches:
++            hex_value = match.group(1)
++            byte_value = bytearray.fromhex(hex_value)
++            replaced_bytes.extend(byte_value)
++            last_index = match.end()
++
++        replaced_bytes.extend(input_string[last_index:].encode('utf-8'))
++
++        return replaced_bytes
++
++class PrinterSerialBridge:
++    def __init__(self, config):
++        self.callbacks = []
++        self.printer = config.get_printer()
++        self.name = config.get_name().split()[-1]
++        self.eol = config.get('eol', default='\n')
++        self._ready = False
++        self.baud = config.getint("baud", 115200)
++        self.serial_config = config.getint("config", 4)
++        self._logging = config.getboolean("logging", False)
++
++        self.reactor = self.printer.get_reactor()
++        self.printer.register_event_handler("klippy:ready", self.handle_ready)
++        self.printer.register_event_handler("klippy:disconnect",
++            self.handle_disconnect)
++
++        ppins = self.printer.lookup_object("pins")
++        pin_params = ppins.lookup_pin(config.get("tx_pin"))
++        rx_pin_params = ppins.lookup_pin(config.get("rx_pin"))
++        self.mcu = pin_params['chip']
++        self.oid = self.mcu.create_oid()
++        self.mcu.register_config_callback(self.build_config)
++
++        self.input_buffer = ""
++
++        self.serial_bridge = self.printer.load_object(config, "serial_bridge")
++        self.serial_bridge.setup_bridge(self)
++
++    def register_callback(self, callback):
++        self.callbacks.append(callback)
++
++    def chunkstring(self, msg, length):
++        return (msg[0+i:length+i] for i in range(0, len(msg), length))
++
++    def send_text(self, msg):
++        self.send_serial(msg.encode('utf-8'))
++
++    def send_serial(self, msg):
++        if not self._ready:
++            self.warn("Can't send message in a disconnected state")
++            return
++
++        chunks = self.chunkstring(
++            msg + self.serial_bridge.perform_replacement(self.eol), 40)
++        for chunk in chunks:
++            byte_debug = ' '.join(['0x{:02x}'.format(byte) for byte in chunk])
++            self.log("Sending message: " + byte_debug)
++            self.serial_bridge_send_cmd.send([self.oid, chunk, 4])
++
++    def build_config(self):
++        rest_ticks = self.mcu.seconds_to_clock(QUERY_TIME)
++        clock = self.mcu.get_query_slot(self.oid)
++        self.mcu.add_config_cmd(
++            "command_config_serial_bridge oid=%d clock=%d rest_ticks=%d "\
++                "config=%d baud=%d" % (
++                    self.oid, clock, rest_ticks, self.serial_config, self.baud
++                ))
++
++        cmd_queue = self.mcu.alloc_command_queue()
++
++        self.mcu.register_response(self._handle_serial_bridge_response,
++            "serial_bridge_response", self.oid)
++        self.serial_bridge_send_cmd = self.mcu.lookup_command(
++            "serial_bridge_send oid=%c text=%*s",
++            cq=cmd_queue)
++
++    def _handle_serial_bridge_response(self, params):
++        data = params["text"]
++
++        data = bytearray(data)
++
++        for callback in self.callbacks:
++            callback(data)
++
++    def handle_ready(self):
++        self.log("Ready")
++        self._ready = True
++
++    def handle_disconnect(self):
++        self._ready = False
++
++    def log(self, msg, *args, **kwargs):
++        if self._logging:
++            logging.info("SERIAL BRIDGE %s: " % (self.name) + str(msg) )
++
++    def warn(self, msg, *args, **kwargs):
++        logging.warning("SERIAL BRIDGE %s: " % (self.name) + str(msg))
++
++def load_config(config):
++    return SerialBridge(config)
++
++def load_config_prefix(config):
++    return PrinterSerialBridge(config)
+diff --git a/src/Makefile b/src/Makefile
+index 8d771f9eb484..5ca37ebab643 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -1,6 +1,7 @@
+ # Main code build rules
+ 
+ src-y += sched.c command.c basecmd.c debugcmds.c
++src-$(CONFIG_SERIAL_BRIDGE) += serial_bridge.c
+ src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \
+     trsync.c
+ src-$(CONFIG_HAVE_GPIO_ADC) += adccmds.c
+diff --git a/src/generic/serial_bridge_irq.c b/src/generic/serial_bridge_irq.c
+new file mode 100644
+index 000000000000..330db1fcbd80
+--- /dev/null
++++ b/src/generic/serial_bridge_irq.c
+@@ -0,0 +1,119 @@
++// Generic interrupt based serial uart helper code
++//
++// Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
++//
++// This file may be distributed under the terms of the GNU GPLv3 license.
++
++#include <string.h> // memmove
++#include "autoconf.h" // CONFIG_SERIAL_BAUD
++#include "board/io.h" // readb
++#include "board/irq.h" // irq_save
++#include "board/misc.h" // console_sendf
++#include "board/pgm.h" // READP
++#include "command.h" // DECL_CONSTANT
++#include "sched.h" // sched_wake_tasks
++#include "serial_bridge_irq.h" // serial_enable_tx_irq
++#include "board/serial_bridge.h" //SERIAL_BRIDGE_CNT
++
++static uint8_t receive_bridge_buf
++        [SERIAL_BRIDGE_CNT][SERIAL_BRIDGE_RX_BUFF_SIZE],
++        receive_bridge_pos[SERIAL_BRIDGE_CNT];
++static uint8_t transmit_bridge_buf
++        [SERIAL_BRIDGE_CNT][SERIAL_BRIDGE_RX_BUFF_SIZE],
++transmit_bridge_pos[SERIAL_BRIDGE_CNT], transmit_bridge_max[SERIAL_BRIDGE_CNT];
++
++void serial_bridge_rx_byte(uint_fast8_t data, uint8_t usart_index) {
++    if (receive_bridge_pos[usart_index] >= SERIAL_BRIDGE_RX_BUFF_SIZE)
++        // Serial overflow - ignore
++        return;
++    sched_wake_tasks();
++    receive_bridge_buf[usart_index][receive_bridge_pos[usart_index]++] = data;
++}
++
++int serial_bridge_get_tx_byte(uint8_t *pdata, uint8_t usart_index) {
++    if (transmit_bridge_pos[usart_index] >= transmit_bridge_max[usart_index])
++        return -1;
++    *pdata =
++        transmit_bridge_buf[usart_index][transmit_bridge_pos[usart_index]++];
++    return 0;
++}
++
++void
++serial_bridge_send(uint8_t* data, uint_fast8_t size, uint8_t config)
++{
++    uint8_t* usart_index_ptr
++        = serial_bridge_get_uart_index_from_config(config);
++
++    if(usart_index_ptr == NULL){
++        return;
++    }
++
++    uint8_t usart_index = *usart_index_ptr;
++
++    // Verify space for message
++    uint_fast8_t tpos =
++        readb(&transmit_bridge_pos[usart_index]),
++        tmax = readb(&transmit_bridge_max[usart_index]);
++
++    if (tpos >= tmax) {
++        tpos = tmax = 0;
++        writeb(&transmit_bridge_max[usart_index], 0);
++        writeb(&transmit_bridge_pos[usart_index], 0);
++    }
++
++    if (tmax + size > sizeof(transmit_bridge_buf[usart_index])) {
++        if (tmax + size - tpos > sizeof(transmit_bridge_buf[usart_index]))
++            // Not enough space for message
++            return;
++        // Disable TX irq and move usart_index
++        writeb(&transmit_bridge_max[usart_index], 0);
++        tpos = readb(&transmit_bridge_pos[usart_index]);
++        tmax -= tpos;
++        memmove(&transmit_bridge_buf[usart_index][0],
++            &transmit_bridge_buf[usart_index][tpos], tmax);
++        writeb(&transmit_bridge_pos[usart_index], 0);
++        writeb(&transmit_bridge_max[usart_index], tmax);
++        serial_bridge_enable_tx_irq(usart_index);
++    }
++
++    // Generate message
++    uint8_t *buf = &transmit_bridge_buf[usart_index][tmax];
++    memcpy(buf, data, size);
++
++    // Start message transmit
++    writeb(&transmit_bridge_max[usart_index], tmax + size);
++    serial_bridge_enable_tx_irq(usart_index);
++}
++
++// Remove from the receive buffer the given number of bytes
++uint8_t
++serial_bridge_get_data(uint8_t* data, uint8_t config)
++{
++    uint8_t* usart_index_ptr
++        = serial_bridge_get_uart_index_from_config(config);
++
++    if(usart_index_ptr == NULL){
++        return 0;
++    }
++
++    uint8_t usart_index = *usart_index_ptr;
++
++    for (;;) {
++        uint_fast8_t rpos = readb(&receive_bridge_pos[usart_index]);
++        if (!rpos)
++            return 0;
++
++        uint8_t *buf = receive_bridge_buf[usart_index];
++        memcpy(data, buf, rpos);
++        irqstatus_t flag = irq_save();
++        if (rpos != readb(&receive_bridge_pos[usart_index])) {
++            // Raced with irq handler - retry
++            irq_restore(flag);
++            continue;
++        }
++        receive_bridge_pos[usart_index] = 0;
++        irq_restore(flag);
++
++        return rpos;
++    }
++}
+diff --git a/src/generic/serial_bridge_irq.h b/src/generic/serial_bridge_irq.h
+new file mode 100644
+index 000000000000..e3d6f0a32dda
+--- /dev/null
++++ b/src/generic/serial_bridge_irq.h
+@@ -0,0 +1,24 @@
++#ifndef __GENERIC_SERIAL_BRIDGE_IRQ_H
++#define __GENERIC_SERIAL_BRIDGE_IRQ_H
++
++#include <stdint.h> // uint32_t
++
++#define SERIAL_BRIDGE_RX_BUFF_SIZE 192
++#define SERIAL_BRIDGE_NUMBER_OF_CONFIGS = 5
++
++// callback provided by board specific code
++void serial_bridge_enable_tx_irq(int8_t usart_index);
++
++// serial_brodge_irq.c
++void serial_bridge_rx_byte(uint_fast8_t data, uint8_t usart_index);
++int serial_bridge_get_tx_byte(uint8_t *pdata, uint8_t usart_index);
++
++// serial_bridge.c
++void serial_bridge_send(uint8_t* data, uint_fast8_t size, uint8_t config);
++
++// serial_bridge.c
++uint8_t serial_bridge_get_data(uint8_t* data, uint8_t config);
++
++int8_t serial_bridge_configure(uint8_t* usart_index, uint32_t* baud);
++
++#endif // serial_bridge_irq.h
+diff --git a/src/serial_bridge.c b/src/serial_bridge.c
+new file mode 100644
+index 000000000000..f8e1ef58488a
+--- /dev/null
++++ b/src/serial_bridge.c
+@@ -0,0 +1,86 @@
++// Support for serial port bridging
++//
++// Copyright (C) 2019  Kevin O'Connor <kevin@koconnor.net>
++//
++// This file may be distributed under the terms of the GNU GPLv3 license.
++
++#include <string.h> // memcpy
++#include "autoconf.h" // CONFIG_MACH_AVR
++#include "board/gpio.h" // gpio_out_write
++#include "board/irq.h" // irq_poll
++#include "board/misc.h" // timer_read_time
++#include "board/io.h" // readb
++#include "generic/serial_bridge_irq.h" // console2_sendf
++#include "basecmd.h" // oid_alloc
++#include "command.h" // DECL_COMMAND
++#include "sched.h" // sched_shutdown
++
++struct serial_bridge {
++    struct timer timer;
++    uint8_t config;
++    uint32_t baud;
++    uint32_t rest_time;
++};
++
++static struct task_wake serial_bridge_wake;
++
++static uint_fast8_t serial_bridge_event(struct timer *timer) {
++    struct serial_bridge *bridge = container_of(
++            timer, struct serial_bridge, timer);
++
++    sched_wake_task(&serial_bridge_wake);
++
++    bridge->timer.waketime += bridge->rest_time;
++
++    return SF_RESCHEDULE;
++}
++
++void
++command_config_serial_bridge(uint32_t *args)
++{
++    struct serial_bridge *bridge = oid_alloc(
++        args[0], command_config_serial_bridge, sizeof(*bridge));
++    bridge->timer.func = serial_bridge_event;
++    bridge->timer.waketime = args[1];
++    bridge->rest_time = args[2];
++    bridge->config = args[3];
++    bridge->baud = args[4];
++
++    serial_bridge_configure(&bridge->config, &bridge->baud);
++    sched_add_timer(&bridge->timer);
++}
++DECL_COMMAND(command_config_serial_bridge,
++            "command_config_serial_bridge oid=%c clock=%u"
++                " rest_ticks=%u config=%c baud=%u");
++
++void
++command_serial_bridge_send(uint32_t *args)
++{
++    struct serial_bridge *sb = oid_lookup(args[0],
++        command_config_serial_bridge);
++    uint8_t data_len = args[1];
++    uint8_t *data = command_decode_ptr(args[2]);
++
++    serial_bridge_send(data, data_len, sb->config);
++}
++DECL_COMMAND(command_serial_bridge_send, "serial_bridge_send oid=%c text=%*s");
++
++void
++serial_bridge_task(void)
++{
++    if (!sched_check_wake(&serial_bridge_wake))
++        return;
++
++    static uint8_t buf[SERIAL_BRIDGE_RX_BUFF_SIZE];
++
++    uint8_t oid;
++    struct serial_bridge *sb;
++    foreach_oid(oid, sb, command_config_serial_bridge) {
++        uint32_t data_len = serial_bridge_get_data(buf, sb->config);
++        if (data_len) {
++            sendf("serial_bridge_response oid=%c text=%*s",
++                oid, (uint8_t)data_len, buf);
++        }
++    }
++}
++DECL_TASK(serial_bridge_task);
+diff --git a/src/stm32/Kconfig b/src/stm32/Kconfig
+index c06bb6ffb0c2..5b7a9d7d5958 100644
+--- a/src/stm32/Kconfig
++++ b/src/stm32/Kconfig
+@@ -491,6 +491,20 @@ choice
+         depends on HAVE_STM32_FDCANBUS
+ endchoice
+ 
++config SERIAL_BRIDGE
++    bool "Enable serial bridge" if LOW_LEVEL_OPTIONS
++    depends on MACH_STM32
++    default n
++
++config ENABLE_SERIAL_BRIDGE_USART1
++    bool "USART1" if SERIAL_BRIDGE && !(STM32_SERIAL_USART1 || STM32_SERIAL_USART1_ALT_PB7_PB6)
++    depends on SERIAL_BRIDGE
++config ENABLE_SERIAL_BRIDGE_USART2
++    bool "USART2" if SERIAL_BRIDGE && !(STM32_SERIAL_USART2 || STM32_SERIAL_USART2_ALT_PA15_PA14 || STM32_SERIAL_USART2_ALT_PB4_PB3 || STM32_SERIAL_USART2_ALT_PD6_PD5)
++    depends on SERIAL_BRIDGE
++config ENABLE_SERIAL_BRIDGE_USART6
++    bool "USART6" if SERIAL_BRIDGE
++    depends on SERIAL_BRIDGE
+ 
+ config STM32_CANBUS_PB8_PB9
+     bool
+diff --git a/src/stm32/Makefile b/src/stm32/Makefile
+index 18af2e9d7b4e..718b14f9f2af 100644
+--- a/src/stm32/Makefile
++++ b/src/stm32/Makefile
+@@ -94,6 +94,8 @@ src-$(CONFIG_USBCANBUS) += $(usb-src-y) $(canbus-src-y)
+ src-$(CONFIG_USBCANBUS) += stm32/chipid.c generic/usb_canbus.c
+ src-$(CONFIG_HAVE_GPIO_HARD_PWM) += stm32/hard_pwm.c
+ 
++src-$(CONFIG_SERIAL_BRIDGE) += stm32/serial_bridge.c generic/serial_bridge_irq.c
++
+ # Binary output file rules
+ target-y += $(OUT)klipper.bin
+ 
+diff --git a/src/stm32/serial_bridge.c b/src/stm32/serial_bridge.c
+new file mode 100644
+index 000000000000..1c442095fc8c
+--- /dev/null
++++ b/src/stm32/serial_bridge.c
+@@ -0,0 +1,238 @@
++// STM32 serial
++//
++// Copyright (C) 2019  Kevin O'Connor <kevin@koconnor.net>
++//
++// This file may be distributed under the terms of the GNU GPLv3 license.
++
++#include "autoconf.h" // CONFIG_SERIAL_BAUD
++#include "board/armcm_boot.h" // armcm_enable_irq
++#include "board/serial_bridge_irq.h" // serial_rx_byte
++#include "command.h" // DECL_CONSTANT_STR
++#include "internal.h" // enable_pclock
++#include "sched.h" // DECL_INIT
++#include "board/gpio.h"
++#include "board/serial_bridge.h"
++
++#define CR1_FLAGS (USART_CR1_UE | USART_CR1_RE | USART_CR1_TE   \
++                   | USART_CR1_RXNEIE)
++
++typedef struct serial_bridge_config {
++    uint8_t number;
++    USART_TypeDef* usart;
++    uint8_t rx_pin;
++    uint8_t tx_pin;
++    uint8_t rx_alt_function;
++    uint8_t tx_alt_function;
++    uint32_t baud;
++    uint8_t active;
++    uint8_t usart_index;
++} serial_bridge_config_t;
++
++
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART1_PA3,PA2", 0);
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART1_PB7,PB6", 1);
++#endif
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART2_PD6,PD5", 2);
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART2_PA3,PA2", 3);
++#endif
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++DECL_CONSTANT("SERIAL_BRIDGE_CONFIG_USART6_PA12,PA11", 4);
++#endif
++
++USART_TypeDef* usarts[] = {
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++    USART1,
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++    USART2,
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++    USART6,
++    #endif
++};
++
++serial_bridge_config_t configs[] = {
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++    {
++        0,
++        USART1,
++        GPIO('A', 3),
++        GPIO('A', 2),
++        7,
++        7
++    },
++    {
++        1,
++        USART1,
++        GPIO('B', 7),
++        GPIO('B', 6),
++        7,
++        7
++    },
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++    {
++        2,
++        USART2,
++        GPIO('D', 6),
++        GPIO('D', 5),
++        7,
++        7
++    },
++    {
++        3,
++        USART2,
++        GPIO('A', 3),
++        GPIO('A', 2),
++        7,
++        7
++    },
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++    {
++        4,
++        USART6,
++        GPIO('A', 12),
++        GPIO('A', 11),
++        8,
++        8
++    },
++    #endif
++};
++
++uint8_t* serial_bridge_get_uart_index_from_config(uint8_t config){
++    for(int8_t i = 0; i <  (sizeof(configs) / sizeof(configs[0])); i++){
++        if(configs[i].number == config){
++            return &(configs[i].usart_index);
++        }
++    }
++    return NULL;
++}
++
++serial_bridge_config_t* serial_bridge_get_config_by_number(uint8_t number){
++    for(int8_t i = 0; i <  (sizeof(configs) / sizeof(configs[0])); i++){
++        if(configs[i].number == number){
++            return &configs[i];
++        }
++    }
++    return NULL;
++}
++
++serial_bridge_config_t*
++serial_bridge_get_active_config_for_usart(USART_TypeDef* usart){
++    for(int8_t i = 0; i <  (sizeof(configs) / sizeof(configs[0])); i++){
++        if(configs[i].usart == usart && configs[i].active){
++            return &configs[i];
++        }
++    }
++    return NULL;
++}
++
++void serial_bridge_handle_uart_irq(serial_bridge_config_t* config){
++    uint32_t sr = config->usart->SR;
++    if (sr & (USART_SR_RXNE | USART_SR_ORE)) {
++        // The ORE flag is automatically cleared by reading SR, followed
++        // by reading DR.
++        serial_bridge_rx_byte(config->usart->DR, config->usart_index);
++    }
++    if (sr & USART_SR_TXE && config->usart->CR1 & USART_CR1_TXEIE) {
++        uint8_t data;
++        int ret = serial_bridge_get_tx_byte(&data, config->usart_index);
++        if (ret)
++            config->usart->CR1 = CR1_FLAGS;
++        else
++            config->usart->DR = data;
++    }
++}
++
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++void
++USART1_serial_bridge_IRQHandler(void)
++{
++   serial_bridge_handle_uart_irq(
++        serial_bridge_get_active_config_for_usart(USART1));
++}
++#endif
++
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++void
++USART2_serial_bridge_IRQHandler(void)
++{
++    serial_bridge_handle_uart_irq(
++        serial_bridge_get_active_config_for_usart(USART2));
++}
++#endif
++
++
++#if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++void
++USART6_serial_bridge_IRQHandler(void)
++{
++    serial_bridge_handle_uart_irq(
++        serial_bridge_get_active_config_for_usart(USART6));
++}
++#endif
++
++void
++serial_bridge_enable_tx_irq(int8_t usart_index)
++{
++    for(int8_t i = 0; i < (sizeof(configs) / sizeof(configs[0])); i++){
++        if(configs[i].usart_index == usart_index && configs[i].active){
++            configs[i].usart->CR1 = CR1_FLAGS | USART_CR1_TXEIE;
++        }
++    }
++}
++
++int8_t
++serial_bridge_configure(uint8_t* config, uint32_t* baud)
++{
++    serial_bridge_config_t* s_config =
++        serial_bridge_get_config_by_number(*config);
++    if (config == NULL) {
++        return -1;
++    }
++    s_config->baud = *baud;
++    s_config->active = 1;
++
++    enable_pclock((uint32_t)s_config->usart);
++
++    uint32_t pclk = get_pclock_frequency((uint32_t)s_config->usart);
++    uint32_t div = DIV_ROUND_CLOSEST(pclk, *baud);
++    s_config->usart->BRR = (((div / 16) << USART_BRR_DIV_Mantissa_Pos)
++                   | ((div % 16) << USART_BRR_DIV_Fraction_Pos));
++    s_config->usart->CR1 = CR1_FLAGS;
++
++    gpio_peripheral(s_config->rx_pin,
++        GPIO_FUNCTION(s_config->rx_alt_function), 1);
++    gpio_peripheral(s_config->tx_pin,
++        GPIO_FUNCTION(s_config->tx_alt_function), 0);
++
++    return 0;
++}
++
++
++void
++serial_bridge_init(void)
++{
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
++    armcm_enable_irq(USART1_serial_bridge_IRQHandler, USART1_IRQn, 0);
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
++    armcm_enable_irq(USART2_serial_bridge_IRQHandler, USART2_IRQn, 0);
++    #endif
++    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++    armcm_enable_irq(USART6_serial_bridge_IRQHandler, USART6_IRQn, 0);
++    #endif
++
++    //assign indexes for the uart buffers that are in use
++    for(int8_t i = 0; i < sizeof(configs)/sizeof(configs[0]); i++){
++        for(int8_t j = 0; j < sizeof(usarts)/sizeof(usarts[0]); j++){
++            if(usarts[j] == configs[i].usart){
++                configs[i].usart_index = j;
++            }
++        }
++    }
++}
++DECL_INIT(serial_bridge_init);
+diff --git a/src/stm32/serial_bridge.h b/src/stm32/serial_bridge.h
+new file mode 100644
+index 000000000000..69685f557ff6
+--- /dev/null
++++ b/src/stm32/serial_bridge.h
+@@ -0,0 +1,6 @@
++#include <stdint.h>
++
++#define SERIAL_BRIDGE_CNT CONFIG_ENABLE_SERIAL_BRIDGE_USART1 + \
++    CONFIG_ENABLE_SERIAL_BRIDGE_USART2 + CONFIG_ENABLE_SERIAL_BRIDGE_USART6
++
++uint8_t* serial_bridge_get_uart_index_from_config(uint8_t config);

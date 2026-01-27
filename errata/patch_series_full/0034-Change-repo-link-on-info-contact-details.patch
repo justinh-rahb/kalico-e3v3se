@@ -1,0 +1,25 @@
+From 11ab588a3ee3565998935a7a85a6265babaf580f Mon Sep 17 00:00:00 2001
+From: Joao Curti <jpcurti@users.noreply.github.com>
+Date: Wed, 29 May 2024 01:34:16 +0200
+Subject: [PATCH 34/43]  Change repo link on info/contact details
+
+---
+ klippy/extras/e3v3se_display.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/klippy/extras/e3v3se_display.py b/klippy/extras/e3v3se_display.py
+index 440a2ff1d..929d5eb3a 100644
+--- a/klippy/extras/e3v3se_display.py
++++ b/klippy/extras/e3v3se_display.py
+@@ -531,7 +531,7 @@ class E3v3seDisplay:
+             self.color_background_black,
+             0,
+             280,
+-            "jpcurti/klipper_E3V3SE_display_mod",
++            "jpcurti/ender3-v3-se-klipper-with-display",
+         )
+ 
+     def lcdExit(self):
+-- 
+2.39.5 (Apple Git-154)
+

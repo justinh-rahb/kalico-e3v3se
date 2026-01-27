@@ -1,0 +1,38 @@
+From bd0bf1924bc21b5a3f232d676fee4f819bc054c8 Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Fri, 17 Nov 2023 01:20:41 +0000
+Subject: [PATCH 17/43] Add CLEAR_NOZZLE parameter to PRTOUCH_PROBE_ZOFFSET
+
+If you want to clear the nozzle before probing, specify
+CLEAR_NOZZLE=1 when calling PRTOUCH_PROBE_ZOFFSET
+
+ex.
+PRTOUCH_PROBE_ZOFFSET CLEAR_NOZZLE=1
+---
+ klippy/extras/prtouch.py | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
+index dc6b961d5..93e6304a2 100644
+--- a/klippy/extras/prtouch.py
++++ b/klippy/extras/prtouch.py
+@@ -26,7 +26,6 @@ class PRTouchCFG:
+         self.pa_fil_dis_mm = config.getint('pa_fil_dis_mm', default=30, minval=2, maxval=100)
+         self.pa_clr_dis_mm = config.getint('pa_clr_dis_mm', default=20, minval=2, maxval=100)
+         self.pa_clr_down_mm = config.getfloat('pa_clr_down_mm', default=-0.1, minval=-1, maxval=1)
+-        self.clear_nozzle = config.getboolean('clear_nozzle', default=False)
+         self.clr_noz_start_x = config.getfloat('clr_noz_start_x', default=0, minval=0, maxval=1000)
+         self.clr_noz_start_y = config.getfloat('clr_noz_start_y', default=0, minval=0, maxval=1000)
+         self.clr_noz_len_x = config.getfloat('clr_noz_len_x', default=0, minval=0, maxval=1000)
+@@ -812,7 +811,7 @@ class PRTouchEndstopWrapper:
+         start_z_offset = self.obj.probe.get_offsets()[2]
+         self.pnt_msg('Start z_offset: %.3f' % start_z_offset)
+ 
+-        if self.cfg.clear_nozzle:
++        if gcmd.get_int('CLEAR_NOZZLE', 0) == 1:
+             self.clear_nozzle(self.cfg.hot_min_temp, self.cfg.hot_max_temp, self.cfg.bed_max_temp,
+                             self.cfg.min_hold, self.cfg.max_hold)
+ 
+-- 
+2.39.5 (Apple Git-154)
+

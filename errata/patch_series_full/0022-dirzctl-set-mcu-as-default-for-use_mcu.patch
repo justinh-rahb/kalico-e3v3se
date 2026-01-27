@@ -1,0 +1,25 @@
+From 6362642183b3b6ef042925888142aa2c781580ae Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Thu, 30 Nov 2023 23:15:18 -0800
+Subject: [PATCH 22/43] [dirzctl] set 'mcu' as default for 'use_mcu'
+
+---
+ klippy/extras/dirzctl.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/klippy/extras/dirzctl.py b/klippy/extras/dirzctl.py
+index c17b43c19..b9fe4642f 100644
+--- a/klippy/extras/dirzctl.py
++++ b/klippy/extras/dirzctl.py
+@@ -10,7 +10,7 @@ class DirZCtl:
+     def __init__(self, config):
+         self.printer = config.get_printer()
+         self.toolhead = None
+-        self.mcu = mcu.get_printer_mcu(self.printer, config.get('use_mcu'))
++        self.mcu = mcu.get_printer_mcu(self.printer, config.get('use_mcu', 'mcu'))
+         self.oid = self.mcu.create_oid()
+         self.steppers = []
+         self.mcu.register_config_callback(self._build_config)
+-- 
+2.39.5 (Apple Git-154)
+

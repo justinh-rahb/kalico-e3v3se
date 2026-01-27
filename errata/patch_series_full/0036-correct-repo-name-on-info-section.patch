@@ -1,0 +1,25 @@
+From 3a3ae03b8840f3a95360daeb42ecc6c4972de328 Mon Sep 17 00:00:00 2001
+From: Joao Curti <jpcurti@users.noreply.github.com>
+Date: Wed, 29 May 2024 15:28:29 +0200
+Subject: [PATCH 36/43]  correct repo name on info section
+
+---
+ klippy/extras/e3v3se_display.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/klippy/extras/e3v3se_display.py b/klippy/extras/e3v3se_display.py
+index 929d5eb3a..15d1416aa 100644
+--- a/klippy/extras/e3v3se_display.py
++++ b/klippy/extras/e3v3se_display.py
+@@ -2727,7 +2727,7 @@ class E3v3seDisplay:
+             self.color_background_black,
+             30,
+             230,
+-            "E3V3SE_display_klipper",
++            "ender3-v3-se-klipper-with-display",
+         )
+         self.Draw_Status_Area()
+ 
+-- 
+2.39.5 (Apple Git-154)
+

@@ -1,0 +1,21 @@
+Base Commit: b7f7b8a346388cc32d80b6e6f60e5fdb4cbd3ce6
+Method: merge-base
+
+commit b7f7b8a346388cc32d80b6e6f60e5fdb4cbd3ce6
+Author: Frans-willem Hardijzer <fw@hardijzer.nl>
+Date:   Wed Feb 7 20:25:36 2024 +0100
+
+    idex_modes: Bugfix for kinematic position calculation.
+    
+    idex_mode would swap the X and dual-carriage rail in some cases
+    (homing), but not in others. As such, the position calculation was
+    correct while homing, but incorrect for the second carriage during
+    normal moves. This commit fixes homing to work without swapped rails,
+    removes the swapping of rails while homing, and removes the ability to
+    swap rails (as it is now no longer used). Fix has been tested in a
+    Hybrid_CoreXY IDEX printer (Voron Double Dragon). Hybrid_CoreXZ has
+    identical changes and is similar enough that I am confident it will work
+    as intended. Changes to cartesion seem simple enough, but would benefit
+    from someone running a couple of tests.
+    
+    Signed-off-by: Frans-Willem Hardijzer <fw@hardijzer.nl>

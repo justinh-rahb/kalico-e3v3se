@@ -1,0 +1,31 @@
+From cefaa7f0176f9df9883d0d7a9bbe0bd4b0ba065f Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Fri, 17 Nov 2023 01:16:19 +0000
+Subject: [PATCH 16/43] Add APPLY_Z_ADJUST parmeter to PRTOUCH_PROBE_ZOFFSET
+
+In order to apply the calculated z_adjust, you must specify
+APPLY_Z_ADJUST=1 when calling PRTOUCH_PROBE_ZOFFSET
+
+ex.
+PRTOUCH_PROBE_ZOFFSET APPLY_Z_ADJUST=1
+---
+ klippy/extras/prtouch.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
+index ab2fffbe5..dc6b961d5 100644
+--- a/klippy/extras/prtouch.py
++++ b/klippy/extras/prtouch.py
+@@ -833,7 +833,8 @@ class PRTouchEndstopWrapper:
+ 
+         z_adjust = z_offset + start_z_offset
+         self.pnt_msg('z_adjust: %.3f' % z_adjust)
+-        self.obj.gcode.run_script_from_command('SET_GCODE_OFFSET Z_ADJUST=%f MOVE=1' % (z_adjust))
++        if gcmd.get_int('APPLY_Z_ADJUST', 0) == 1:
++            self.obj.gcode.run_script_from_command('SET_GCODE_OFFSET Z_ADJUST=%f MOVE=1' % (z_adjust))
+ 
+         z_probe[2] = homing_origin[2] + z_adjust - start_z_offset
+         self.obj.probe.probe_calibrate_finalize(z_probe)
+-- 
+2.39.5 (Apple Git-154)
+

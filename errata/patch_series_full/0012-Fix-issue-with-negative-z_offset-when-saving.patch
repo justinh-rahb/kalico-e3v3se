@@ -1,0 +1,27 @@
+From 079f7052938fe51f2d7d92c180428dae12d18f40 Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Mon, 13 Nov 2023 23:27:23 +0000
+Subject: [PATCH 12/43] Fix issue with negative z_offset when saving
+
+---
+ klippy/extras/prtouch.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
+index f82370076..41182afa4 100644
+--- a/klippy/extras/prtouch.py
++++ b/klippy/extras/prtouch.py
+@@ -816,8 +816,8 @@ class PRTouchEndstopWrapper:
+         z_probe = self.obj.probe.run_probe(gcmd)
+         z_offset = self.probe_z_offset() - z_probe[2]
+         self.pnt_msg('Z_OFFSET: %.2f' % z_offset)
+-        z_probe[2] = -z_offset
+-        self.obj.probe.z_offset = z_probe[2]
++        self.obj.probe.z_offset = -z_offset
++        z_probe[2] = z_offset
+         self.obj.probe.probe_calibrate_finalize(z_probe)
+ 
+ 
+-- 
+2.39.5 (Apple Git-154)
+

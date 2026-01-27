@@ -1,0 +1,36 @@
+From 712a716a0ae13b19c469df5349c278bd45fdb382 Mon Sep 17 00:00:00 2001
+From: SupremeCake17 <132528442+SupremeCake17@users.noreply.github.com>
+Date: Thu, 30 May 2024 18:54:30 -0500
+Subject: [PATCH 39/43] Fixed getting sdcard print stats
+
+---
+ klippy/extras/printerInterface.py | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/klippy/extras/printerInterface.py b/klippy/extras/printerInterface.py
+index c15421d13..bd12d08d3 100644
+--- a/klippy/extras/printerInterface.py
++++ b/klippy/extras/printerInterface.py
+@@ -281,8 +281,8 @@ class PrinterData:
+ 
+     def printingIsPaused(self):
+         return (
+-            self.job_Info["print_stats"]["state"] == "paused"
+-            or self.job_Info["print_stats"]["state"] == "pausing"
++            self.job_Info["state"] == "paused"
++            or self.job_Info["state"] == "pausing"
+         )
+ 
+     def getPercent(self):
+@@ -298,7 +298,7 @@ class PrinterData:
+             "virtual_sdcard").get_status(self.reactor.monotonic())
+         if self.virtual_sdcard_stats:
+             if self.virtual_sdcard_stats["is_active"]:
+-                return self.job_Info["print_stats"]["print_duration"]
++                return self.job_Info["print_duration"]
+         return 0
+ 
+     def remain(self):
+-- 
+2.39.5 (Apple Git-154)
+

@@ -1,0 +1,25 @@
+From 554b0301455c5e6a7a8c395d217bacc6a70fe8b2 Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Sat, 11 Nov 2023 06:42:18 +0000
+Subject: [PATCH 02/43] compile dirzctl.c and hx711s.c
+
+---
+ src/Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/Makefile b/src/Makefile
+index 8d771f9eb..74bd305d0 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -2,7 +2,7 @@
+ 
+ src-y += sched.c command.c basecmd.c debugcmds.c
+ src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \
+-    trsync.c
++    trsync.c dirzctl.c hx711s.c
+ src-$(CONFIG_HAVE_GPIO_ADC) += adccmds.c
+ src-$(CONFIG_HAVE_GPIO_SPI) += spicmds.c
+ src-$(CONFIG_HAVE_GPIO_SDIO) += sdiocmds.c
+-- 
+2.39.5 (Apple Git-154)
+

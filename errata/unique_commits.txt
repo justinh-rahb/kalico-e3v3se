@@ -1,0 +1,61 @@
+358f298e9 Merge pull request #26 from jpcurti/16-update-readme-with-installation-instructions
+cfd315580 Add installation instructions in readme
+860ff9e49 Merge pull request #25 from jpcurti/14-remove-configuration-options-that-are-fixed-1
+38d1f19ef Now configuration parameters of serial bridge and menu keys are defaulted for e3v3se
+5a7fe0e45 Add language as printer.cfg parameter change from supreme_cake
+72fd938bc Removed boot screen from original project
+4955ffd3e Merge pull request #13 from jpcurti/10-fix-printer-interface-Gcode-command-sending
+712a716a0 Fixed getting sdcard print stats
+5e44ef1e7 Fixed Gcode command sending in printerInterface
+728ed0717 Merge pull request #9 from jpcurti/improve_docs
+8307bcd58  Add demo gif and very basic readme
+3a3ae03b8  correct repo name on info section
+b8bf2c5b2 Merge pull request #7 from jpcurti/6-add-tjc-screen-and-display-interfaces-from-jpcurtie3v3se_display_klipper
+96cd0dbd6 Add filelist and gcode sections from supreme_cake
+11ab588a3  Change repo link on info/contact details
+09ec47c7e Add display and (incomplete version of) printer interface. Buttons and menus are now functional
+a34fd9a58  Add TJC screen interface adapted for serial bridge
+e1e565dab Merge pull request #5 from jpcurti/4-configure-serial-bridge-from-usb-to-usart2
+2e08a2c2c  Configure serial bridge as part of e3v3se display
+cd1e82a79 Add uart bridge module from @E4ST2W3ST /klipper
+1fadc59ad Merge pull request #2 from jpcurti/1-configure-rotary-encoder-buttons-with-buttons-module-from-klipper-display
+f4e7cc69b Map encoder states to same structure as expected by the display interface
+5536a21b5 Configure rotary encoder button via klipper menu_keys module
+9703decff Merge remote-tracking branch 'upstream/master'
+0512a7c0c Merge remote-tracking branch 'upstream/master'
+257787726 Merge remote-tracking branch 'upstream/master'
+de89acf1c Merge remote-tracking branch 'upstream/master'
+25f794fb8 Merge remote-tracking branch 'upstream/master'
+21eb915d6 Merge pull request #11 from schnoog/master
+b41a93be4 fix #10 Added #include "autoconf.h" so src/dirzctl.c and src/hx711s.c Without it CONFIG_CLOCK_FREQ is unknown to both files and compiling of additional MCUs (f.e. RP2040) fail. Changes tested with V3SE (STM32) and RP2040 as micro-controller architecture.
+1292e5e84 Merge remote-tracking branch 'upstream/master'
+a3be0247a Merge remote-tracking branch 'upstream/master'
+43f014d52 Implement PRTOUCH_ACCURACY command
+f546d3802 Rename g29_speed to probe_speed
+7fafb8e60 Merge remote-tracking branch 'upstream/master'
+8625d4e66 Remove unexpected setting of nozzle clearing cfg
+4b6f64782 [prtouch] set defualt bedmax_err to 4
+636264218 [dirzctl] set 'mcu' as default for 'use_mcu'
+7d8057a8d [hx711s] set 'mcu' as default for 'use_mcu'
+66efcf01c Less aggressive nozzle clearing
+99ad6a48f Merge remote-tracking branch 'upstream/master'
+145a9ae4b Randomize probing location
+07ad2aad8 Cleanup and remove unused code
+bd0bf1924 Add CLEAR_NOZZLE parameter to PRTOUCH_PROBE_ZOFFSET
+cefaa7f01 Add APPLY_Z_ADJUST parmeter to PRTOUCH_PROBE_ZOFFSET
+eb5d6b125 Merge branch 'master' of github.com:0xD34D/klipper_ender3_v3_se
+c45d254c2 Use SET_GCODE_OFFSET to adjust Z
+ed6bb1272 Update issue templates
+cdc11ba50 Probe sensor location twice using the bltouch
+079f70529 Fix issue with negative z_offset when saving
+9c9b84871 Add option for retracting when wiping
+af97bc775 Always home before probing
+6fa405912 Refactor nozzle cleaning code for the e3v3se
+6590444fb Implement PRTOUCH_PROBE_ZOFFSET command
+b56a26a18 Remove use of gcode.respond_info
+ad60bc6b3 Get the PRTOUCH_READY command working
+b20fa68aa Add sensor_x and sensor_y to prtouch
+2b3e8411f Add missing get_pin_info method to stepper.py
+e582d12e7 Don't make prtouch a probe
+554b03014 compile dirzctl.c and hx711s.c
+311db3db0 Add creality source code for prtouch

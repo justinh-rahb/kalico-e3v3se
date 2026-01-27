@@ -1,0 +1,27 @@
+From 4b6f64782a7e4e63c99e13c9b774d8a8493fa000 Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Thu, 30 Nov 2023 23:23:30 -0800
+Subject: [PATCH 23/43] [prtouch] set defualt bedmax_err to 4
+
+This value seems to be used to position the toolhead a safe distance
+above the build plate.
+---
+ klippy/extras/prtouch.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
+index 595d60bc1..02cc37009 100644
+--- a/klippy/extras/prtouch.py
++++ b/klippy/extras/prtouch.py
+@@ -27,7 +27,7 @@ class PRTouchCFG:
+         self.clr_noz_start_y = config.getfloat('clr_noz_start_y', default=0, minval=0, maxval=1000)
+         self.clr_noz_len_x = config.getfloat('clr_noz_len_x', default=0, minval=0, maxval=1000)
+         self.clr_noz_len_y = config.getfloat('clr_noz_len_y', default=0, minval=self.pa_clr_dis_mm + 5, maxval=1000)
+-        self.bed_max_err = config.getint('bed_max_err', default=2, minval=2, maxval=10)
++        self.bed_max_err = config.getint('bed_max_err', default=4, minval=2, maxval=10)
+         self.max_z = config.getsection('stepper_z').getfloat('position_max', default=300, minval=100, maxval=500)
+         self.g29_xy_speed = config.getfloat('g29_xy_speed', default=150, minval=10, maxval=1000)
+         self.g29_rdy_speed = config.getfloat('g29_rdy_speed', default=2.5, minval=0.1, maxval=10)
+-- 
+2.39.5 (Apple Git-154)
+

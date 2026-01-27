@@ -1,0 +1,25 @@
+From 7d8057a8d1048f5c144a4241295bfb436d996aac Mon Sep 17 00:00:00 2001
+From: 0xD34D <clark@scheffsblend.com>
+Date: Thu, 30 Nov 2023 23:13:05 -0800
+Subject: [PATCH 21/43] [hx711s] set 'mcu' as default for 'use_mcu'
+
+---
+ klippy/extras/hx711s.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/klippy/extras/hx711s.py b/klippy/extras/hx711s.py
+index 5d9aefb76..d5c946bb3 100644
+--- a/klippy/extras/hx711s.py
++++ b/klippy/extras/hx711s.py
+@@ -25,7 +25,7 @@ class HX711S:
+         for i in range(self.s_count):
+             self.s_clk_pin.append(config.get('sensor%d_clk_pin' % i, None if i == 0 else self.s_clk_pin[i - 1]))
+             self.s_sdo_pin.append(config.get('sensor%d_sdo_pin' % i, None if i == 0 else self.s_sdo_pin[i - 1]))
+-        self.mcu = mcu.get_printer_mcu(self.printer, config.get('use_mcu'))
++        self.mcu = mcu.get_printer_mcu(self.printer, config.get('use_mcu', 'mcu'))
+         self.oid = self.mcu.create_oid()
+         self.mcu.register_config_callback(self._build_config)
+         self.mcu.register_response(self._handle_debug_hx711s, "debug_hx711s", self.oid)
+-- 
+2.39.5 (Apple Git-154)
+
