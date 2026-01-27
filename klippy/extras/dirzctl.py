@@ -18,7 +18,6 @@ class DirZCtl:
         self.oid = self.mcu.create_oid()
         self.steppers = []
         self.mcu.register_config_callback(self._build_config)
-        self.mcu.register_config_callback(self._build_config)
         self.mcu.register_response(
             self._handle_debug_dirzctl, "debug_dirzctl", self.oid
         )
