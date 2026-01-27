@@ -131,6 +131,9 @@ serial_bridge_get_active_config_for_usart(USART_TypeDef* usart){
 }
 
 void serial_bridge_handle_uart_irq(serial_bridge_config_t* config){
+    // Guard against NULL - IRQ may fire before USART is configured
+    if (config == NULL)
+        return;
     uint32_t sr = config->usart->SR;
     if (sr & (USART_SR_RXNE | USART_SR_ORE)) {
         // The ORE flag is automatically cleared by reading SR, followed
@@ -209,6 +212,20 @@ serial_bridge_configure(uint8_t* config, uint32_t* baud)
     gpio_peripheral(s_config->tx_pin,
         GPIO_FUNCTION(s_config->tx_alt_function), 0);
 
+    // Enable IRQ only after USART is fully configured
+    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
+    if (s_config->usart == USART1)
+        armcm_enable_irq(USART1_serial_bridge_IRQHandler, USART1_IRQn, 0);
+    #endif
+    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
+    if (s_config->usart == USART2)
+        armcm_enable_irq(USART2_serial_bridge_IRQHandler, USART2_IRQn, 0);
+    #endif
+    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
+    if (s_config->usart == USART6)
+        armcm_enable_irq(USART6_serial_bridge_IRQHandler, USART6_IRQn, 0);
+    #endif
+
     return 0;
 }
 
@@ -216,15 +233,8 @@ serial_bridge_configure(uint8_t* config, uint32_t* baud)
 void
 serial_bridge_init(void)
 {
-    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART1
-    armcm_enable_irq(USART1_serial_bridge_IRQHandler, USART1_IRQn, 0);
-    #endif
-    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART2
-    armcm_enable_irq(USART2_serial_bridge_IRQHandler, USART2_IRQn, 0);
-    #endif
-    #if CONFIG_ENABLE_SERIAL_BRIDGE_USART6
-    armcm_enable_irq(USART6_serial_bridge_IRQHandler, USART6_IRQn, 0);
-    #endif
+    // NOTE: IRQ registration moved to serial_bridge_configure() to prevent
+    // NULL pointer crash when IRQ fires before USART is configured
 
     //assign indexes for the uart buffers that are in use
     for(int8_t i = 0; i < sizeof(configs)/sizeof(configs[0]); i++){
