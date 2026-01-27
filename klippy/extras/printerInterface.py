@@ -328,9 +328,7 @@ class PrinterData:
             )
         )
 
-    def sendGCode(self, Gcode):
-        gcode = self.printer.lookup_object('gcode')
-        gcode._process_commands([Gcode])
+
 
     def disable_all_heaters(self):
         self.setExtTemp(0)
@@ -389,8 +387,7 @@ class PrinterData:
     def setExtTemp(self, target, toolnum=0):
         self.sendGCode("M104 T%s S%s" % (toolnum, str(target)))
 
-    def setExtTemp(self, target):
-        self.sendGCode('M104 S' + str(target))
+
 
     def setZOffset(self, offset):
         self.sendGCode('SET_GCODE_OFFSET Z={} MOVE=1'.format(str(offset)))

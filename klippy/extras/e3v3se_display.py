@@ -1,9 +1,9 @@
 import logging
 import time
 from .display.menu_keys import MenuKeys
-from .TJC3224 import TJC3224_LCD
 from .printerInterface import PrinterData
 from .serial_bridge import PrinterSerialBridge
+from .TJC3224 import TJC3224_LCD
 
 def current_milli_time():
     return round(time.time() * 1000)

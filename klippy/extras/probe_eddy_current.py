@@ -7,7 +7,6 @@ import bisect
 import math
 
 from .. import mcu
-
 from . import ldc1612, manual_probe, probe
 
 

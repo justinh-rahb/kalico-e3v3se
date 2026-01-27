@@ -7,7 +7,6 @@ import logging
 import os
 
 from .. import mcu, pins
-
 from . import bus
 
 REPLICAPE_MAX_CURRENT = 3.84
