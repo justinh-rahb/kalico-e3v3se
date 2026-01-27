@@ -37,30 +37,36 @@ This fork combines the advanced features of Kalico (a community-maintained Klipp
    git clone https://github.com/justinh-rahb/kalico-e3v3se.git ~/klipper
    ```
 
-2. Configure the build:
+2. Clean and configure the build:
    ```bash
    cd ~/klipper
+   make clean
    make menuconfig
    ```
 
-   Select the following options:
+3. Select the following options in menuconfig:
    - Micro-controller Architecture: **STMicroelectronics STM32**
    - Processor model: **STM32F103**
    - Bootloader offset: **28KiB bootloader**
    - Communication interface: **Serial (on USART1 PA10/PA9)**
-   - Enable extra low-level configuration: **Enable**
-   - Serial bridge for USART2: **Enable**
+   - Enable extra low-level configuration options: **[*] Enable**
+     - Serial Bridge: **[*] Enable Serial Bridge**
+       - Bridge USART: **USART2**
 
-3. Build the firmware:
+   > **Note:** If your board uses the GD32F303 chip, it is usually compatible with the STM32F103 setting.
+
+4. Build the firmware:
    ```bash
    make
    ```
 
-4. Copy `out/klipper.bin` to an SD card, renaming it to something unique (the printer won't flash if the filename matches the previous flash)
+5. Copy `out/klipper.bin` to an SD card, renaming it to something unique (e.g., `klipper_kalico_v1.bin`). The printer won't flash if the filename matches the previous flash.
 
-5. Insert the SD card into your printer and power cycle to flash
+6. Insert the SD card into your printer and power cycle to flash. Wait approximately 10 seconds for the flash to complete.
 
 ### Installing Klipper Host Software
+
+#### Option 1: Fresh Installation with KIAUH
 
 If you haven't installed Klipper before, use [KIAUH](https://github.com/dw-0/kiauh) to install Klipper, Moonraker, and your preferred web interface.
 
@@ -80,12 +86,37 @@ To point KIAUH to this repository:
 
 3. Use KIAUH's settings menu to switch Klipper source repository
 
-### Updating Python Environment
+#### Option 2: Switching from Existing Klipper
 
-If needed, update the Python environment:
-```bash
-~/klippy-env/bin/pip install -r ~/klipper/scripts/klippy-requirements.txt
-```
+If you already have Klipper installed and want to switch to this fork:
+
+1. Stop Klipper:
+   ```bash
+   sudo systemctl stop klipper
+   ```
+
+2. Backup your existing installation and switch:
+   ```bash
+   mv ~/klipper ~/klipper.bak
+   git clone https://github.com/justinh-rahb/kalico-e3v3se.git ~/klipper
+   ```
+
+   Alternatively, use a symlink to keep both versions:
+   ```bash
+   mv ~/klipper ~/klipper.bak
+   git clone https://github.com/justinh-rahb/kalico-e3v3se.git ~/klipper-e3v3se
+   ln -s ~/klipper-e3v3se ~/klipper
+   ```
+
+3. Update the Python environment if needed:
+   ```bash
+   ~/klippy-env/bin/pip install -r ~/klipper/scripts/klippy-requirements.txt
+   ```
+
+4. Restart Klipper:
+   ```bash
+   sudo systemctl start klipper
+   ```
 
 ## Configuration
 
@@ -170,12 +201,26 @@ This fork includes all Kalico features from the main branch. See the [Kalico doc
 - Gcode shell commands
 - And many more advanced features
 
+## Verification
+
+After installation, verify everything is working:
+
+1. Check `klippy.log` for any errors related to `e3v3se_display`:
+   ```bash
+   grep e3v3se ~/printer_data/logs/klippy.log
+   ```
+
+2. The display should show the Klipper interface (not the Creality screensaver)
+
+3. Test basic operations: temperature display, axis movement, file browsing
+
 ## Troubleshooting
 
 **Display not responding:**
 - Verify the firmware was flashed correctly (try a different filename)
 - Check that `[e3v3se_display]` is in your printer.cfg
 - Enable `logging: True` to debug serial communication
+- Check `klippy.log` for errors related to `e3v3se_display`
 
 **Wrong language displayed:**
 - Ensure the `language` option matches one of the supported languages exactly (lowercase)
@@ -183,6 +228,11 @@ This fork includes all Kalico features from the main branch. See the [Kalico doc
 **Custom macros not appearing:**
 - Verify the `gcode` option is set in each macro section
 - Check Klipper logs for any configuration errors
+
+**Firmware won't flash:**
+- Rename the `.bin` file to something different from the previous flash
+- Ensure the file is in the root of the SD card
+- Try a different SD card (some cards have compatibility issues)
 
 ## License
 
