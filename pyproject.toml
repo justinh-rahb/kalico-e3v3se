@@ -56,6 +56,9 @@ ignore = [
   "E721", # Do not compare types, use 'isinstance()'
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"klippy/extras/prtouch.py" = ["F401"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["test"]
