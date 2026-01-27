@@ -6,7 +6,7 @@
 from logging import Filter
 from os import remove
 from time import time
-import mcu
+from .. import mcu
 import math
 
 

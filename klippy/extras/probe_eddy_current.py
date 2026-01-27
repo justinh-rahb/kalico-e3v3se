@@ -6,7 +6,7 @@
 import bisect
 import math
 
-from klippy import mcu
+from .. import mcu
 
 from . import ldc1612, manual_probe, probe
 

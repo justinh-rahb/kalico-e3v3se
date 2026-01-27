@@ -6,7 +6,7 @@
 import logging
 import os
 
-from klippy import mcu, pins
+from .. import mcu, pins
 
 from . import bus
 

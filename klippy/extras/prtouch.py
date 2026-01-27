@@ -6,7 +6,7 @@
 import logging
 import math
 import random
-import mcu
+from .. import mcu
 import time
 
 class PRTouchCFG:
