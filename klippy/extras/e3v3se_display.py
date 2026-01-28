@@ -194,11 +194,14 @@ class E3v3seDisplay:
     select_PLA = select_t()
     select_TPU = select_t()
 
+    select_misc = select_t()
+
     index_file = MROWS
     index_prepare = MROWS
     index_control = MROWS
     index_leveling = MROWS
     index_tune = MROWS
+    index_misc = MROWS
 
     MainMenu = 0
     SelectFile = 1
@@ -222,14 +225,15 @@ class E3v3seDisplay:
     Step = 19
     Step_value = 20
     FeatureNotAvailable = 21
+    Misc = 22
 
     # Last Process ID
     Last_Prepare = 21
     last_status = ""
 
     # Back Process ID
-    Back_Main = 22
-    Back_Print = 23
+    Back_Main = 100
+    Back_Print = 101
 
     # Date variable ID
     Move_X = 24
@@ -667,7 +671,9 @@ class E3v3seDisplay:
                     self.icon_Control()
                 if self.select_page.now == 3:
                     self.icon_Control()
-                    if self.pd.HAS_ONESTEP_LEVELING:
+                    if self.custom_buttons:
+                        self.icon_Misc(True)
+                    elif self.pd.HAS_ONESTEP_LEVELING:
                         self.icon_Leveling(True)
                     else:
                         self.icon_StartInfo(True)
@@ -681,12 +687,16 @@ class E3v3seDisplay:
                     self.icon_Control()
                 elif self.select_page.now == 2:
                     self.icon_Control()
-                    if self.pd.HAS_ONESTEP_LEVELING:
+                    if self.custom_buttons:
+                        self.icon_Misc(False)
+                    elif self.pd.HAS_ONESTEP_LEVELING:
                         self.icon_Leveling(False)
                     else:
                         self.icon_StartInfo(False)
                 elif self.select_page.now == 3:
-                    if self.pd.HAS_ONESTEP_LEVELING:
+                    if self.custom_buttons:
+                        self.icon_Misc(True)
+                    elif self.pd.HAS_ONESTEP_LEVELING:
                         self.icon_Leveling(True)
                     else:
                         self.icon_StartInfo(True)
@@ -704,8 +714,13 @@ class E3v3seDisplay:
                 self.select_control.reset()
                 self.index_control = self.MROWS
                 self.Draw_Control_Menu()
-            if self.select_page.now == 3:  # Leveling or Info
-                if self.pd.HAS_ONESTEP_LEVELING:
+            if self.select_page.now == 3:  # Leveling, Info or Misc
+                if self.custom_buttons:
+                    self.checkkey = self.Misc
+                    self.select_misc.reset()
+                    self.index_misc = self.MROWS
+                    self.Draw_Misc_Menu()
+                elif self.pd.HAS_ONESTEP_LEVELING:
                     # The leveling menu is not implemented yet, therefore it popups
                     # a "feature not available" window
                     self.popup_caller = self.MainMenu
@@ -2692,6 +2707,93 @@ class E3v3seDisplay:
             True, self.selected_language, self.icon_text_remain_time, 170, 122
         )
 
+    def HMI_Misc(self):
+        encoder_state = self.get_encoder_state()
+        if encoder_state == self.ENCODER_DIFF_NO:
+            return
+
+        cnt = len(self.custom_buttons)
+        if encoder_state == self.ENCODER_DIFF_CW:
+            if self.select_misc.inc(1 + cnt):
+                if (
+                    self.select_misc.now > self.MROWS
+                    and self.select_misc.now > self.index_misc
+                ):
+                    self.index_misc = self.select_misc.now
+                    self.Scroll_Menu(self.scroll_up)
+                    self.Item_Misc(
+                        self.MROWS,
+                        self.custom_buttons[self.select_misc.now - 1],
+                    )
+                else:
+                    self.Move_Highlight(
+                        1,
+                        self.select_misc.now + self.MROWS - self.index_misc,
+                    )
+        elif encoder_state == self.ENCODER_DIFF_CCW:
+            if self.select_misc.dec():
+                if self.select_misc.now < self.index_misc - self.MROWS:
+                    self.index_misc -= 1
+                    self.Scroll_Menu(self.scroll_down)
+                    if self.index_misc == self.MROWS:
+                        self.Draw_Back_First()
+                    else:
+                        self.Item_Misc(
+                            0, self.custom_buttons[self.select_misc.now - 1]
+                        )
+                else:
+                    self.Move_Highlight(
+                        -1,
+                        self.select_misc.now + self.MROWS - self.index_misc,
+                    )
+        elif encoder_state == self.ENCODER_DIFF_ENTER:
+            if self.select_misc.now == 0:
+                self.Goto_MainMenu()
+            else:
+                btn = self.custom_buttons[self.select_misc.now - 1]
+                logging.info(
+                    "E3V3SE Display: Executing macro '%s': %s"
+                    % (btn["label"], btn["gcode"])
+                )
+                self.gcode.run_script_from_command(btn["gcode"])
+                self.Goto_MainMenu()
+
+    def Draw_Misc_Menu(self):
+        self.Clear_Main_Window()
+        # Draw "Miscellaneous" on header using text
+        self.lcd.draw_string(
+            False,
+            self.lcd.font_12x24,
+            self.color_white,
+            self.color_background_grey,
+            29,
+            1,
+            "Miscellaneous",
+        )
+
+        scroll = self.MROWS - self.index_misc
+        self.Draw_Back_First(self.select_misc.now == 0)
+        for i, btn in enumerate(self.custom_buttons):
+            line = i + 1 + scroll
+            if 0 < line <= self.MROWS:
+                self.Item_Misc(line, btn)
+        if self.select_misc.now:
+            self.Draw_Menu_Cursor(self.select_misc.now)
+        self.Draw_Status_Area()
+
+    def Item_Misc(self, line, button_config):
+        # Use a generic icon or the one from config
+        icon_id = button_config.get("icon")
+        if icon_id is None:
+            icon_id = self.icon_file
+        else:
+            try:
+                icon_id = int(icon_id)
+            except:
+                icon_id = self.icon_file
+
+        self.Draw_Menu_Line(line, icon=icon_id, label=button_config["label"])
+
     def Draw_Print_ProgressBar(self, Percentrecord=None):
         if not Percentrecord:
             Percentrecord = self.pd.getPercent()
@@ -3320,7 +3422,9 @@ class E3v3seDisplay:
         self.icon_Print()
         self.icon_Prepare()
         self.icon_Control()
-        if self.pd.HAS_ONESTEP_LEVELING:
+        if self.custom_buttons:
+            self.icon_Misc(self.select_page.now == 3)
+        elif self.pd.HAS_ONESTEP_LEVELING:
             self.icon_Leveling(self.select_page.now == 3)
         else:
             self.icon_StartInfo(self.select_page.now == 3)
@@ -3738,6 +3842,33 @@ class E3v3seDisplay:
             )
             # self.lcd.move_screen_area(1, 84, 465, 120, 478, 182, 318)
 
+    def icon_Misc(self, show):
+        if show:
+            self.lcd.draw_icon(
+                True, self.ICON, self.icon_leveling_selected, 126, 178
+            )
+            self.lcd.draw_string(
+                False,
+                self.lcd.font_8x16,
+                self.Selected_color,
+                self.color_background_black,
+                155,
+                247 + 8,
+                "Misc",
+            )
+            self.lcd.draw_rectangle(0, self.color_white, 126, 178, 226, 292)
+        else:
+            self.lcd.draw_icon(True, self.ICON, self.icon_leveling, 126, 178)
+            self.lcd.draw_string(
+                False,
+                self.lcd.font_8x16,
+                self.color_white,
+                self.color_background_black,
+                155,
+                247 + 8,
+                "Misc",
+            )
+
     def icon_StartInfo(self, show):
         if show:
             self.lcd.draw_icon(True, self.ICON, self.icon_Info_1, 145, 246)
@@ -3968,6 +4099,8 @@ class E3v3seDisplay:
             self.HMI_Temperature()
         elif self.checkkey == self.Motion:
             self.HMI_Motion()
+        elif self.checkkey == self.Misc:
+            self.HMI_Misc()
         elif self.checkkey == self.Info:
             self.HMI_Info()
         elif self.checkkey == self.Tune:
