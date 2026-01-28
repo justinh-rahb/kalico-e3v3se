@@ -2751,10 +2751,6 @@ class E3v3seDisplay:
                 self.Goto_MainMenu()
             else:
                 btn = self.custom_buttons[self.select_misc.now - 1]
-                logging.info(
-                    "E3V3SE Display: Executing macro '%s': %s"
-                    % (btn["label"], btn["gcode"])
-                )
                 self.gcode.run_script_from_command(btn["gcode"])
                 self.Goto_MainMenu()
 
